@@ -90,6 +90,8 @@
   .tab.active{color:var(--ink);border-bottom-color:var(--gold);background:rgba(184,137,43,0.08);}
   /* Expense list */
   .expense-item{display:flex;align-items:flex-start;gap:14px;padding:16px 8px;border-bottom:1px solid var(--paper-line);border-radius:8px;transition:background .15s ease, transform .1s ease;}
+  .date-heading{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--gold);padding:14px 8px 8px;}
+  .date-heading:first-child{padding-top:2px;}
   .expense-item:hover{background:rgba(184,137,43,0.06);transform:translateX(2px);}
   .expense-item:last-child{border-bottom:none;}
   .expense-icon{width:38px;height:38px;border-radius:10px;background:var(--paper);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0;}
@@ -169,6 +171,7 @@
     .member-actions{width:100%;padding-left:48px;margin-top:2px;}
     /* expense detail grid tightens automatically via inline auto-fit, just reduce gaps */
     .setup-note{margin:32px auto;padding:18px;}
+    #memberChartWrap{grid-template-columns:1fr !important;}
   }
   @media (max-width:380px){
     .brand-title span{display:none;}
@@ -189,6 +192,7 @@
 <div id="app" class="wrap" style="display:none"></div>
 <div id="toastHost"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <script type="module">
 /* ============================================================
    1) APNA FIREBASE CONFIG YAHAN PASTE KAREIN
@@ -230,13 +234,16 @@ const db = getFirestore(app);
 const membersCol = collection(db, "members");
 const expensesCol = collection(db, "expenses");
 const invitesCol = collection(db, "invites"); // doc id = email
+const settlementsCol = collection(db, "settlements");
 
 let currentUser = null;   // firebase auth user
 let myMember = null;      // my member doc {id,...}
 let allMembers = [];      // active + pending (invites live separately now)
 let allExpenses = [];
 let allInvites = [];      // pending invites {id(=email), name, email, createdAt}
-let unsubMembers = null, unsubExpenses = null, unsubInvites = null;
+let allSettlements = [];  // past settlements, newest first
+let unsubMembers = null, unsubExpenses = null, unsubInvites = null, unsubSettlements = null;
+let activeCharts = []; // Chart.js instances currently on screen, destroyed before each re-render
 
 const DESCRIPTION_SUGGESTIONS = ['Grocery','Rent','Electricity Bill','Water Bill','Gas','Internet / WiFi','Maintenance','Cleaning','Food / Eating Out','Vegetables','Milk','Other'];
 const EDIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
@@ -246,6 +253,8 @@ function parseRoute(){
   const parts = hash.split('/').filter(Boolean);
   if (parts.length === 0) return {page:'dashboard'};
   if (parts[0] === 'add') return {page:'add'};
+  if (parts[0] === 'reports') return {page:'reports'};
+  if (parts[0] === 'charts') return {page:'charts'};
   if (parts[0] === 'members') return {page:'members'};
   if (parts[0] === 'expense' && parts[1]) return {page: parts[2]==='edit' ? 'editExpense' : 'expenseDetail', id: parts[1]};
   return {page:'dashboard'};
@@ -281,9 +290,10 @@ onAuthStateChanged(auth, async (user) => {
   if (unsubMembers) unsubMembers();
   if (unsubExpenses) { unsubExpenses(); unsubExpenses = null; }
   if (unsubInvites) unsubInvites();
+  if (unsubSettlements) { unsubSettlements(); unsubSettlements = null; }
 
   if (!user) {
-    myMember = null; allMembers = []; allExpenses = []; allInvites = [];
+    myMember = null; allMembers = []; allExpenses = []; allInvites = []; allSettlements = [];
     renderAuthScreen();
     return;
   }
@@ -346,6 +356,15 @@ onAuthStateChanged(auth, async (user) => {
       );
     } else if (!isActiveNow && unsubExpenses) {
       unsubExpenses(); unsubExpenses = null; allExpenses = [];
+    }
+
+    if (isActiveNow && !unsubSettlements) {
+      unsubSettlements = onSnapshot(query(settlementsCol, orderBy('settledUpTo','desc')),
+        (ssnap) => { allSettlements = ssnap.docs.map(d => ({id:d.id, ...d.data()})); render(); },
+        (err) => { toast('Settlements read error: ' + err.message, 'error'); }
+      );
+    } else if (!isActiveNow && unsubSettlements) {
+      unsubSettlements(); unsubSettlements = null; allSettlements = [];
     }
 
     render();
@@ -477,6 +496,23 @@ async function deleteExpense(id){
   }
 }
 
+/* ---------------- SETTLEMENTS ---------------- */
+async function createSettlement(settledUpToMs, net, txns){
+  try{
+    await addDoc(settlementsCol, {
+      settledUpTo: new Date(settledUpToMs),
+      createdAt: serverTimestamp(),
+      createdBy: currentUser.uid,
+      net, txns
+    });
+    toast('Hisaab settle ho gaya ✓', 'success');
+    return true;
+  }catch(e){
+    toast('Error: ' + (e.message || 'settle nahi ho paya'), 'error');
+    return false;
+  }
+}
+
 function canEdit(exp){
   const isAdmin = myMember && myMember.role === 'admin';
   if (isAdmin) return true;
@@ -491,16 +527,79 @@ function formatDateTime(ts){
   return d.toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'}) + ' · ' +
          d.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'});
 }
+function formatDateOnly(ts){
+  if (!ts) return '—';
+  const d = ts.toDate ? ts.toDate() : new Date(ts);
+  return d.toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'});
+}
+function dateLabel(ts){
+  if (!ts || !ts.toDate) return 'Date pending…';
+  const d = ts.toDate();
+  const now = new Date();
+  const startOf = dt => new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+  const diffDays = Math.round((startOf(now) - startOf(d)) / 86400000);
+  if (diffDays === 0) return 'Aaj';
+  if (diffDays === 1) return 'Kal';
+  return d.toLocaleDateString('en-IN', {weekday:'short', day:'2-digit', month:'short', year:'numeric'});
+}
+function toDateInputValue(d){
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const dd = String(d.getDate()).padStart(2,'0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+function tsToMillis(ts){
+  if (!ts) return 0;
+  if (ts.toMillis) return ts.toMillis();
+  return new Date(ts).getTime();
+}
+// Returns {fromMs, toMs} covering a whole calendar month, monthsAgo=0 is the current month.
+function monthRange(monthsAgo){
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth() - monthsAgo;
+  const start = new Date(y, m, 1, 0,0,0,0);
+  const end = new Date(y, m+1, 1, 0,0,0,0);
+  return { fromMs: start.getTime() - 1, toMs: end.getTime() - 1 };
+}
+function monthLabel(monthsAgo){
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 1);
+  return d.toLocaleDateString('en-IN', {month:'short', year:'numeric'});
+}
+function groupByDescription(expenses){
+  const map = {};
+  expenses.forEach(exp => {
+    const label = (exp.description || 'Other').trim() || 'Other';
+    const key = label.toLowerCase();
+    if (!map[key]) map[key] = { label, total:0, count:0 };
+    map[key].total += exp.amount;
+    map[key].count += 1;
+  });
+  return Object.values(map).sort((a,b)=>b.total-a.total);
+}
 
 /* ---------------- BALANCE ENGINE ---------------- */
-function computeBalances(){
+// Computes net balances + minimal settle-up transactions using only expenses
+// with createdAt in (fromMs, toMs]. Also returns the total spent, per-member
+// paid totals, and the matching filtered expense list (already date-desc sorted).
+function computeBalancesInRange(fromMs, toMs){
   const activeMembers = allMembers.filter(m=>m.status==='active');
-  const net = {}; // uid -> net (positive = should receive, negative = owes)
-  activeMembers.forEach(m => net[m.uid] = 0);
+  const net = {}, paidByMember = {};
+  activeMembers.forEach(m => { net[m.uid] = 0; paidByMember[m.uid] = 0; });
+
+  const filteredExpenses = [];
+  let total = 0;
 
   allExpenses.forEach(exp => {
+    // an expense whose serverTimestamp hasn't resolved locally yet is treated as "now"
+    const createdMs = exp.createdAt ? tsToMillis(exp.createdAt) : Date.now();
+    if (createdMs <= fromMs || createdMs > toMs) return;
+    filteredExpenses.push(exp);
+
     const n = exp.splitAmong?.length || 0;
     if (!n) return;
+    total += exp.amount;
+    if (paidByMember[exp.paidBy] !== undefined) paidByMember[exp.paidBy] += exp.amount;
     const share = exp.amount / n;
     if (net[exp.paidBy] !== undefined) net[exp.paidBy] += exp.amount;
     exp.splitAmong.forEach(uid => {
@@ -508,7 +607,10 @@ function computeBalances(){
     });
   });
 
-  // simplify into minimal transactions
+  return {net, txns: minimalTxns(net), total, paidByMember, filteredExpenses};
+}
+
+function minimalTxns(net){
   const debtors = [], creditors = [];
   Object.entries(net).forEach(([uid, val]) => {
     if (val < -0.5) debtors.push({uid, amt:-val});
@@ -527,7 +629,14 @@ function computeBalances(){
     if (d.amt < 0.5) i++;
     if (c.amt < 0.5) j++;
   }
-  return {net, txns};
+  return txns;
+}
+
+// Current live balances: only expenses AFTER the last settlement count.
+function computeBalances(){
+  const lastSettlement = allSettlements[0] || null;
+  const sinceMs = lastSettlement ? tsToMillis(lastSettlement.settledUpTo) : 0;
+  return computeBalancesInRange(sinceMs, Number.MAX_SAFE_INTEGER);
 }
 
 function nameFor(uid){
@@ -643,6 +752,8 @@ function renderMainApp(){
     <div class="tabs">
       <button class="tab ${route.page==='dashboard'?'active':''}" data-nav="#/">Home</button>
       <button class="tab ${route.page==='add'?'active':''}" data-nav="#/add">+ Naya Kharcha</button>
+      <button class="tab ${route.page==='reports'?'active':''}" data-nav="#/reports">Reports</button>
+      <button class="tab ${route.page==='charts'?'active':''}" data-nav="#/charts">Charts</button>
       ${isAdmin ? `<button class="tab ${route.page==='members'?'active':''}" data-nav="#/members">Members</button>` : ''}
     </div>
 
@@ -660,6 +771,10 @@ function renderMainApp(){
     renderDashboard(host, activeMembers);
   } else if (route.page === 'add') {
     renderExpenseForm(host, {mode:'add', activeMembers});
+  } else if (route.page === 'reports') {
+    renderReports(host, activeMembers, isAdmin);
+  } else if (route.page === 'charts') {
+    renderCharts(host, activeMembers);
   } else if (route.page === 'members') {
     if (!isAdmin) { goTo('#/'); return; }
     renderMembers(host, isAdmin, activeMembers);
@@ -677,6 +792,7 @@ function renderMainApp(){
 
 function renderDashboard(host, activeMembers){
   const {net, txns} = computeBalances();
+  const lastSettlement = allSettlements[0] || null;
   host.innerHTML = `
     <div class="settle-board">
       <h2>Kis ne kise dena hai</h2>
@@ -695,19 +811,26 @@ function renderDashboard(host, activeMembers){
           return `<div class="net-card"><div class="name">${escapeHtml(m.name)}</div><div class="val ${cls}">${money(v)}</div><div class="name" style="opacity:.6;font-size:11px;">${label}</div></div>`;
         }).join('')}
       </div>
+      ${lastSettlement ? `<div style="font-size:11.5px;opacity:.75;margin-top:14px;position:relative;">ℹ️ Ye hisaab <b>${formatDateOnly(lastSettlement.settledUpTo)}</b> ke baad ke kharchon ka hai — usse pehle ka sab settle ho chuka hai. <a href="#/reports" style="color:var(--gold-light);">Reports mein poori history dekhein →</a></div>` : ''}
     </div>
     <div id="sec-board"></div>
   `;
   renderExpenseList(document.getElementById('sec-board'), activeMembers);
 }
 
-function renderExpenseList(host, activeMembers){
-  if (!allExpenses.length){
-    host.innerHTML = `<div class="card empty"><span class="emoji">🧾</span>Abhi tak koi kharcha add nahi hua.<br>"+ Naya Kharcha" se shuru karein.</div>`;
-    return;
+function renderExpenseListItems(expenses){
+  if (!expenses.length){
+    return `<div class="card empty"><span class="emoji">🧾</span>Is period mein koi kharcha nahi mila.</div>`;
   }
-  host.innerHTML = `<div class="card">
-    ${allExpenses.map(exp => `
+  let lastLabel = null;
+  let rows = '';
+  expenses.forEach(exp => {
+    const label = dateLabel(exp.createdAt);
+    if (label !== lastLabel){
+      rows += `<div class="date-heading">${label}</div>`;
+      lastLabel = label;
+    }
+    rows += `
       <div class="expense-item" data-open="${exp.id}" style="cursor:pointer;">
         <div class="expense-icon">🧾</div>
         <div class="expense-desc">
@@ -718,12 +841,311 @@ function renderExpenseList(host, activeMembers){
         <div style="text-align:right;">
           <div class="expense-amt">${money(exp.amount)}</div>
         </div>
-      </div>
-    `).join('')}
-  </div>`;
+      </div>`;
+  });
+  return `<div class="card">${rows}</div>`;
+}
+
+function renderExpenseList(host, activeMembers){
+  if (!allExpenses.length){
+    host.innerHTML = `<div class="card empty"><span class="emoji">🧾</span>Abhi tak koi kharcha add nahi hua.<br>"+ Naya Kharcha" se shuru karein.</div>`;
+    return;
+  }
+  host.innerHTML = renderExpenseListItems(allExpenses);
   host.querySelectorAll('[data-open]').forEach(el=>{
     el.onclick = ()=> goTo('#/expense/' + el.dataset.open);
   });
+}
+
+function renderSettlementHistory(){
+  if (!allSettlements.length){
+    return `<div class="empty" style="padding:26px 10px;"><span class="emoji">🤝</span>Abhi tak koi settlement nahi hua.</div>`;
+  }
+  return allSettlements.map(s => `
+    <div style="border-bottom:1px solid var(--paper-line);padding:14px 4px;">
+      <div style="font-weight:600;font-size:14px;margin-bottom:4px;">${formatDateOnly(s.settledUpTo)} tak settle kiya gaya</div>
+      <div style="font-size:12px;color:var(--ink-soft);margin-bottom:9px;">${formatDateTime(s.createdAt)} · by ${escapeHtml(nameFor(s.createdBy))}</div>
+      <div class="chips">
+        ${(s.txns && s.txns.length) ? s.txns.map(t=>`<span class="chip">${escapeHtml(nameFor(t.from))} → ${escapeHtml(nameFor(t.to))} · ${money(t.amt)}</span>`).join('')
+          : `<span class="chip">Us waqt sab pehle se barabar tha</span>`}
+      </div>
+    </div>`).join('');
+}
+
+function renderReports(host, activeMembers, isAdmin){
+  const today = new Date();
+  const todayStr = toDateInputValue(today);
+  const oldestExp = allExpenses.length ? allExpenses[allExpenses.length-1] : null;
+  const oldestStr = (oldestExp && oldestExp.createdAt) ? toDateInputValue(tsToMillis(oldestExp.createdAt) ? new Date(tsToMillis(oldestExp.createdAt)) : today) : todayStr;
+  const lastSettlement = allSettlements[0] || null;
+  const lastSettleMs = lastSettlement ? tsToMillis(lastSettlement.settledUpTo) : 0;
+
+  host.innerHTML = `
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="margin-bottom:14px;">Date se filter karein</h3>
+      <div class="row">
+        <div class="field"><label>From</label><input type="date" id="repFrom" value="${oldestStr}" max="${todayStr}"/></div>
+        <div class="field"><label>To</label><input type="date" id="repTo" value="${todayStr}" max="${todayStr}"/></div>
+      </div>
+      <button class="btn-primary" id="repGoBtn">Dikhao</button>
+      <div id="repResult" style="margin-top:18px;"></div>
+    </div>
+
+    ${isAdmin ? `
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="margin-bottom:8px;">Hisaab settle karein</h3>
+      <p style="font-size:13px;color:var(--ink-soft);margin-bottom:14px;line-height:1.55;">
+        Jab sab members aapas mein cash/UPI se paise clear kar lein, to yahan se ek date tak ke saare kharche "settle" mark kar dein.
+        Uske baad Home page ka hisaab sirf us date ke <b>baad</b> ke naye kharchon se banega — purana hisaab yahan history mein records rahega.
+        ${lastSettlement ? `<br><br>📌 Pichhli baar <b>${formatDateOnly(lastSettlement.settledUpTo)}</b> tak settle hua tha.` : '<br><br>Abhi tak koi settlement nahi hua hai.'}
+      </p>
+      <div class="field" style="max-width:220px;"><label>Is date tak settle karein</label><input type="date" id="settleDate" value="${todayStr}" max="${todayStr}"/></div>
+      <button class="btn-danger" id="settlePreviewBtn">Settle Preview Dekhein</button>
+      <div id="settlePreview" style="margin-top:16px;"></div>
+    </div>` : ''}
+
+    <div class="card">
+      <h3 style="margin-bottom:6px;">Settlement History</h3>
+      <div id="settleHistory">${renderSettlementHistory()}</div>
+    </div>
+  `;
+
+  function runFilter(){
+    const fromVal = document.getElementById('repFrom').value;
+    const toVal = document.getElementById('repTo').value;
+    if (!fromVal || !toVal){ toast('Dono dates chunein'); return; }
+    const fromMs = new Date(fromVal + 'T00:00:00').getTime() - 1; // inclusive of "from" day
+    const toMs = new Date(toVal + 'T23:59:59.999').getTime();
+    if (fromMs >= toMs){ toast('From date, To date se pehle honi chahiye'); return; }
+    const {total, paidByMember, filteredExpenses} = computeBalancesInRange(fromMs, toMs);
+    const resHost = document.getElementById('repResult');
+    resHost.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px;flex-wrap:wrap;gap:8px;border-top:1px solid var(--paper-line);padding-top:16px;">
+        <div style="font-size:13px;color:var(--ink-soft);">Total kharcha (${filteredExpenses.length} entries)</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:22px;">${money(total)}</div>
+      </div>
+      <div class="net-grid" style="margin-bottom:16px;">
+        ${activeMembers.map(m=>`<div class="net-card" style="background:var(--paper);border-color:var(--border);">
+          <div class="name" style="color:var(--ink-soft);">${escapeHtml(m.name)}</div>
+          <div class="val" style="color:var(--ink);">${money(paidByMember[m.uid]||0)}</div>
+          <div class="name" style="opacity:.6;font-size:11px;color:var(--ink-soft);">paid</div>
+        </div>`).join('')}
+      </div>
+      ${renderExpenseListItems(filteredExpenses)}
+    `;
+    resHost.querySelectorAll('[data-open]').forEach(el=>{
+      el.onclick = ()=> goTo('#/expense/' + el.dataset.open);
+    });
+  }
+  document.getElementById('repGoBtn').onclick = runFilter;
+  runFilter();
+
+  if (isAdmin){
+    document.getElementById('settlePreviewBtn').onclick = ()=>{
+      const dateVal = document.getElementById('settleDate').value;
+      if (!dateVal){ toast('Date chunein'); return; }
+      const toMs = new Date(dateVal + 'T23:59:59.999').getTime();
+      if (toMs <= lastSettleMs){ toast('Ye date pichhle settlement se pehle ya usi din ki hai'); return; }
+      const {net, txns} = computeBalancesInRange(lastSettleMs, toMs);
+      const previewHost = document.getElementById('settlePreview');
+      previewHost.innerHTML = `
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;">
+          ${txns.length ? txns.map(t=>`<div style="font-size:14px;padding:6px 0;border-bottom:1px solid var(--paper-line);">${escapeHtml(nameFor(t.from))} → ${escapeHtml(nameFor(t.to))}: <b>${money(t.amt)}</b></div>`).join('')
+            : `<div style="font-size:13px;color:var(--ink-soft);">Is period mein koi naya hisaab nahi bacha (sab pehle se settled).</div>`}
+        </div>
+        <button class="btn-primary" id="settleConfirmBtn">Ye Confirm Karein aur Settle Karein</button>
+      `;
+      document.getElementById('settleConfirmBtn').onclick = async ()=>{
+        if (!confirm('Pakka? Ye action undo nahi ho sakta — is date tak ka poora hisaab "settled" mark ho jayega.')) return;
+        const ok = await createSettlement(toMs, net, txns);
+        if (ok){ previewHost.innerHTML = ''; }
+      };
+    };
+  }
+}
+
+/* ---------------- CHARTS PAGE ---------------- */
+const CHART_COLORS = ['#B8892B','#2F6E4F','#B23A48','#3E6EA5','#8A5DB8','#C17A3E','#4A9B8E','#B85A8A','#6B8E4E','#A5763E'];
+
+function destroyCharts(){
+  activeCharts.forEach(c => { try{ c.destroy(); }catch(e){} });
+  activeCharts = [];
+}
+
+function renderCharts(host, activeMembers){
+  destroyCharts();
+
+  const periods = [
+    {key:'thisMonth', label:'Is Mahine', range: monthRange(0)},
+    {key:'lastMonth', label:'Pichle Mahine', range: monthRange(1)},
+    {key:'allTime', label:'Sab Time', range: {fromMs:-1, toMs:Number.MAX_SAFE_INTEGER}},
+  ];
+  let selectedPeriod = 'thisMonth';
+
+  // month-over-month comparison (always this-month-so-far vs last full month)
+  const thisM = monthRange(0), lastM = monthRange(1);
+  const thisTotal = computeBalancesInRange(thisM.fromMs, thisM.toMs).total;
+  const lastTotal = computeBalancesInRange(lastM.fromMs, lastM.toMs).total;
+  const delta = thisTotal - lastTotal;
+  const pct = lastTotal > 0 ? (delta / lastTotal * 100) : (thisTotal > 0 ? 100 : 0);
+  const up = delta > 0.5, down = delta < -0.5;
+  const trendColor = up ? 'var(--debt)' : down ? 'var(--credit)' : 'var(--ink-soft)';
+  const trendIcon = up ? '▲' : down ? '▼' : '—';
+  const trendText = up ? 'zyada' : down ? 'kam' : 'barabar';
+
+  // last 6 months trend
+  const monthsBack = 5;
+  const monthlyTotals = [];
+  for (let i = monthsBack; i >= 0; i--){
+    const r = monthRange(i);
+    monthlyTotals.push({ label: monthLabel(i), total: computeBalancesInRange(r.fromMs, r.toMs).total });
+  }
+
+  host.innerHTML = `
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="margin-bottom:14px;">Pichle mahine se comparison</h3>
+      <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
+        <div>
+          <div style="font-size:12px;color:var(--ink-soft);margin-bottom:4px;">Is mahine (abhi tak)</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:24px;">${money(thisTotal)}</div>
+        </div>
+        <div style="font-size:20px;color:var(--border);">vs</div>
+        <div>
+          <div style="font-size:12px;color:var(--ink-soft);margin-bottom:4px;">Pichla mahina (poora)</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:24px;">${money(lastTotal)}</div>
+        </div>
+        <div style="margin-left:auto;text-align:right;">
+          <div style="font-size:13px;font-weight:700;color:${trendColor};">${trendIcon} ${Math.abs(pct).toFixed(0)}% ${trendText}</div>
+          <div style="font-size:11px;color:var(--ink-soft);">pichle mahine ke mukable</div>
+        </div>
+      </div>
+      <div style="margin-top:18px;height:220px;"><canvas id="monthTrendChart"></canvas></div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+        <h3>Kisne kitna kharch kiya</h3>
+        <select id="periodSelect" style="width:auto;min-width:150px;">
+          ${periods.map(p=>`<option value="${p.key}" ${p.key===selectedPeriod?'selected':''}>${p.label}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:minmax(180px,260px) 1fr;gap:20px;align-items:center;" id="memberChartWrap">
+        <div style="height:240px;"><canvas id="memberChart"></canvas></div>
+        <div id="memberLegend"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:14px;">Kis saman/cheez par sabse zyada kharcha hua</h3>
+      <div style="height:320px;"><canvas id="itemChart"></canvas></div>
+      <p id="itemChartNote" style="font-size:12px;color:var(--ink-soft);margin-top:10px;"></p>
+    </div>
+  `;
+
+  // --- month trend bar chart ---
+  const trendCtx = document.getElementById('monthTrendChart');
+  activeCharts.push(new Chart(trendCtx, {
+    type: 'bar',
+    data: {
+      labels: monthlyTotals.map(m=>m.label),
+      datasets: [{
+        data: monthlyTotals.map(m=>m.total),
+        backgroundColor: monthlyTotals.map((m,i)=> i===monthlyTotals.length-1 ? '#B8892B' : 'rgba(184,137,43,0.35)'),
+        borderRadius: 6,
+        maxBarThickness: 46
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display:false }, tooltip: { callbacks: { label: (ctx)=> money(ctx.parsed.y) } } },
+      scales: { y: { beginAtZero:true, ticks:{ callback:(v)=>'₹'+v } }, x: { grid:{display:false} } }
+    }
+  }));
+
+  // --- member pie/doughnut chart, redraws on period change ---
+  function drawMemberChart(periodKey){
+    const period = periods.find(p=>p.key===periodKey);
+    const { paidByMember, total } = computeBalancesInRange(period.range.fromMs, period.range.toMs);
+    const entries = activeMembers
+      .map(m => ({ name: m.name, uid: m.uid, val: paidByMember[m.uid] || 0 }))
+      .filter(e => e.val > 0)
+      .sort((a,b)=> b.val - a.val);
+
+    const memberChartWrap = document.getElementById('memberChartWrap');
+    const legendHost = document.getElementById('memberLegend');
+    if (activeCharts[1]) { try{ activeCharts[1].destroy(); }catch(e){} activeCharts[1]=null; }
+
+    if (!entries.length){
+      memberChartWrap.innerHTML = `<div class="empty" style="grid-column:1/-1;padding:30px 10px;"><span class="emoji">📊</span>Is period mein koi kharcha nahi mila.</div>`;
+      return;
+    }
+    // rebuild canvas since innerHTML may have been replaced by the empty-state above on a prior draw
+    if (!document.getElementById('memberChart')){
+      memberChartWrap.innerHTML = `<div style="height:240px;"><canvas id="memberChart"></canvas></div><div id="memberLegend"></div>`;
+    }
+    const ctx = document.getElementById('memberChart');
+    activeCharts[1] = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: entries.map(e=>e.name),
+        datasets: [{ data: entries.map(e=>e.val), backgroundColor: entries.map((_,i)=>CHART_COLORS[i%CHART_COLORS.length]), borderWidth:2, borderColor:'#FFFDF7' }]
+      },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        plugins: { legend: { display:false }, tooltip: { callbacks: { label:(ctx)=> `${ctx.label}: ${money(ctx.parsed)}` } } }
+      }
+    });
+    document.getElementById('memberLegend').innerHTML = entries.map((e,i)=>`
+      <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--paper-line);">
+        <span style="width:11px;height:11px;border-radius:3px;background:${CHART_COLORS[i%CHART_COLORS.length]};flex-shrink:0;"></span>
+        <span style="flex:1;font-size:14px;">${escapeHtml(e.name)}</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:14px;">${money(e.val)}</span>
+        <span style="font-size:12px;color:var(--ink-soft);min-width:38px;text-align:right;">${total>0 ? Math.round(e.val/total*100) : 0}%</span>
+      </div>`).join('');
+  }
+  activeCharts.push(null); // reserve index 1 for member chart
+  drawMemberChart(selectedPeriod);
+  document.getElementById('periodSelect').onchange = (e) => {
+    selectedPeriod = e.target.value;
+    drawMemberChart(selectedPeriod);
+    drawItemChart(selectedPeriod);
+  };
+
+  // --- item/description spend chart, uses same period selector ---
+  function drawItemChart(periodKey){
+    const period = periods.find(p=>p.key===periodKey);
+    const { filteredExpenses } = computeBalancesInRange(period.range.fromMs, period.range.toMs);
+    const grouped = groupByDescription(filteredExpenses);
+    const top = grouped.slice(0, 10);
+    const note = document.getElementById('itemChartNote');
+
+    if (activeCharts[2]) { try{ activeCharts[2].destroy(); }catch(e){} activeCharts[2]=null; }
+
+    if (!top.length){
+      document.getElementById('itemChart').style.display='none';
+      note.textContent = 'Is period mein koi kharcha nahi mila.';
+      return;
+    }
+    document.getElementById('itemChart').style.display='';
+    note.textContent = grouped.length > 10 ? `Top 10 dikhaye gaye hain (total ${grouped.length} alag items mein se).` : '';
+
+    const ctx = document.getElementById('itemChart');
+    activeCharts[2] = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: top.map(t=>t.label),
+        datasets: [{ data: top.map(t=>t.total), backgroundColor: top.map((_,i)=>CHART_COLORS[i%CHART_COLORS.length]), borderRadius:6 }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive:true, maintainAspectRatio:false,
+        plugins: { legend:{display:false}, tooltip:{ callbacks:{ label:(ctx)=> `${money(ctx.parsed.x)} (${top[ctx.dataIndex].count} baar)` } } },
+        scales: { x:{ beginAtZero:true, ticks:{ callback:(v)=>'₹'+v } } }
+      }
+    });
+  }
+  activeCharts.push(null); // reserve index 2 for item chart
+  drawItemChart(selectedPeriod);
 }
 
 function renderExpenseDetail(host, exp){
@@ -947,16 +1369,17 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function isSignedIn() { return request.auth != null; }
+    function memberExists() {
+      return exists(/databases/$(database)/documents/members/$(request.auth.uid));
+    }
     function myMember() {
-      return exists(/databases/$(database)/documents/members/$(request.auth.uid))
-        ? get(/databases/$(database)/documents/members/$(request.auth.uid)).data
-        : null;
+      return get(/databases/$(database)/documents/members/$(request.auth.uid)).data;
     }
     function isActiveMember() {
-      return isSignedIn() && myMember() != null && myMember().status == 'active';
+      return isSignedIn() && memberExists() && myMember().status == 'active';
     }
     function isAdmin() {
-      return isActiveMember() && myMember().role == 'admin';
+      return isSignedIn() && memberExists() && myMember().status == 'active' && myMember().role == 'admin';
     }
 
     match /members/{memberId} {
@@ -986,6 +1409,13 @@ service cloud.firestore {
       );
       allow delete: if isAdmin();
     }
+
+    match /settlements/{settlementId} {
+      allow read: if isActiveMember();
+      allow create: if isAdmin();
+      // settlements are an immutable audit trail — never editable or deletable
+      allow update, delete: if false;
+    }
   }
 }
 
@@ -994,8 +1424,27 @@ service cloud.firestore {
 
 KAISE KAAM KARTA HAI:
 - App mein alag alag pages hain (URL hash se): Home (#/), + Naya Kharcha (#/add),
-  Members (#/members, sirf admin ko dikhta hai), aur har kharche ka apna
-  detail page (#/expense/ID) jahan se edit page (#/expense/ID/edit) khulta hai.
+  Reports (#/reports, date-filter + settle-up), Charts (#/charts, visual
+  breakdown), sab members ko dikhte hain. Members (#/members, sirf admin ko
+  dikhta hai), aur har kharche ka apna detail page (#/expense/ID) jahan se
+  edit page (#/expense/ID/edit) khulta hai.
+- Charts page 3 cheezein dikhata hai: (1) is mahine ka kharcha pichle mahine
+  se compare + pichle 6 mahino ka trend, (2) kisne kitna kharch kiya (doughnut
+  chart, "Is Mahine / Pichle Mahine / Sab Time" filter ke saath), (3) kaunse
+  "saman"/description par sabse zyada kharcha hua (top 10 items ka bar chart).
+  Ye page Chart.js library use karta hai (CDN se load hoti hai, isliye
+  internet chahiye).
+- Home page ke kharche latest-first, date-wise headings (Aaj / Kal / poori
+  date) ke saath group hokar dikhte hain.
+- Reports page se koi bhi member From–To date chunke us period ka total
+  kharcha aur har member ne kitna paid kiya dekh sakta hai.
+- Reports page par admin ko ek "Settle" section bhi dikhta hai: ek date
+  chunkar preview dekhte hain ki us date tak kisko kitna dena/lena hai, aur
+  confirm karne par ek "settlement" record ban jata hai (immutable — kabhi
+  edit/delete nahi hota, sirf history ke liye rehta hai). Iske baad Home
+  page ka live hisaab sirf us settlement ke BAAD ke naye kharchon se
+  banta hai — purana hisaab dobara nahi dikhta, lekin Reports > Settlement
+  History mein hamesha ke liye record rehta hai.
 - Sabse pehla signup karne wala user automatically ADMIN ban jata hai.
 - Admin "Members" page se naye member ko email+naam se INVITE karta hai
   (ye page normal members ko bilkul nahi dikhta). Jab wo email us naam se
