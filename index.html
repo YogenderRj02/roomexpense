@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Khata — Room Expense Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1B2A4A;
+    --ink-soft:#3E4E6E;
+    --paper:#F7F3E8;
+    --paper-line:#E4DCC6;
+    --paper-raised:#FFFDF7;
+    --gold:#B8892B;
+    --gold-light:#E4B85A;
+    --debt:#B23A48;
+    --credit:#2F6E4F;
+    --border:#D8CFB4;
+    --radius:14px;
+    --shadow:0 4px 18px rgba(27,42,74,0.08);
+    --shadow-lg:0 12px 32px rgba(27,42,74,0.14);
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'Inter',sans-serif;
+    background-image:repeating-linear-gradient(var(--paper) 0 31px, var(--paper-line) 31px 32px);
+    background-attachment:local; min-height:100vh;}
+  .wrap{max-width:960px;margin:0 auto;padding:20px 20px 90px;}
+  h1,h2,h3{font-family:'Fraunces',serif;font-weight:600;color:var(--ink);margin:0;}
+  #page-host{animation:fadeIn .35s ease;}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+  .brand{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;
+    margin:-20px -20px 22px;padding:16px 20px;flex-wrap:wrap;gap:12px;
+    background:rgba(247,243,232,0.88);backdrop-filter:blur(10px);border-bottom:1px solid var(--paper-line);}
+  .brand-title{display:flex;align-items:baseline;gap:10px;}
+  .brand-title h1{font-size:26px;letter-spacing:-0.01em;}
+  .brand-title span{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink-soft);border:1px solid var(--border);padding:2px 8px;border-radius:20px;}
+  .who{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--ink-soft);}
+  .who b{color:var(--ink);}
+  .pill{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:2px 8px;border-radius:20px;background:var(--gold);color:#fff;}
+  button{font-family:'Inter',sans-serif;cursor:pointer;border:none;border-radius:9px;padding:10px 18px;font-size:14px;font-weight:600;transition:transform .1s ease, opacity .15s ease, box-shadow .15s ease;}
+  button:active{transform:scale(.96);}
+  .btn-primary{background:var(--ink);color:var(--paper-raised);box-shadow:0 2px 8px rgba(27,42,74,0.25);}
+  .btn-primary:hover{opacity:.92;box-shadow:0 4px 14px rgba(27,42,74,0.32);}
+  .btn-ghost{background:transparent;color:var(--ink-soft);border:1px solid var(--border);}
+  .btn-ghost:hover{background:var(--paper-raised);border-color:var(--ink-soft);}
+  .btn-danger{background:transparent;color:var(--debt);border:1px solid var(--debt);}
+  .btn-danger:hover{background:rgba(178,58,72,0.08);}
+  .btn-small{padding:6px 12px;font-size:12px;}
+  input,select{font-family:'Inter',sans-serif;font-size:14px;padding:11px 13px;border:1px solid var(--border);border-radius:9px;background:var(--paper-raised);color:var(--ink);width:100%;transition:border-color .15s ease, box-shadow .15s ease;}
+  input:focus,select:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(184,137,43,0.18);}
+  select{cursor:pointer;}
+  label{font-size:11px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:6px;}
+  .card{background:var(--paper-raised);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;transition:box-shadow .2s ease;}
+  .center-screen{min-height:80vh;display:flex;align-items:center;justify-content:center;}
+  .auth-card{width:100%;max-width:380px;box-shadow:var(--shadow-lg);}
+  .auth-tabs{display:flex;gap:6px;margin-bottom:18px;}
+  .auth-tabs button{flex:1;background:transparent;color:var(--ink-soft);border:1px solid var(--border);}
+  .auth-tabs button.active{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .field{margin-bottom:14px;}
+  .err{color:var(--debt);font-size:13px;margin-top:8px;min-height:16px;}
+  .msg{color:var(--credit);font-size:13px;margin-top:8px;}
+  .spinner{width:26px;height:26px;border-radius:50%;border:3px solid var(--paper-line);border-top-color:var(--gold);animation:spin .7s linear infinite;margin:0 auto 14px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  /* Settle board */
+  .settle-board{background:linear-gradient(135deg, var(--ink) 0%, #26375e 100%);border-radius:18px;padding:24px;color:var(--paper);margin-bottom:26px;position:relative;overflow:hidden;box-shadow:var(--shadow-lg);}
+  .settle-board::before{content:"";position:absolute;top:-50px;right:-50px;width:200px;height:200px;border-radius:50%;background:radial-gradient(circle, rgba(228,184,90,0.35), transparent 70%);}
+  .settle-board::after{content:"";position:absolute;bottom:-60px;left:-30px;width:160px;height:160px;border-radius:50%;background:radial-gradient(circle, rgba(255,255,255,0.06), transparent 70%);}
+  .settle-board h2{color:#fff;font-size:19px;margin-bottom:14px;position:relative;}
+  .settle-list{display:flex;flex-direction:column;gap:8px;position:relative;}
+  .settle-row{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px 16px;font-size:14px;transition:background .15s ease;}
+  .settle-row:hover{background:rgba(255,255,255,0.11);}
+  .settle-row b{color:#fff;}
+  .arrow{color:var(--gold-light);font-family:'IBM Plex Mono',monospace;font-size:12px;}
+  .amt{margin-left:auto;font-family:'IBM Plex Mono',monospace;font-weight:700;color:var(--gold-light);font-size:15px;}
+  .all-settled{opacity:.85;font-size:14px;padding:14px 0;position:relative;}
+  .net-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:16px;position:relative;}
+  .net-card{background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px 14px;}
+  .net-card .name{font-size:12px;color:var(--paper);opacity:.85;}
+  .net-card .val{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:17px;margin-top:2px;}
+  .val.pos{color:#7FD6A6;}
+  .val.neg{color:#F0A0A8;}
+  .val.zero{color:#cfcfcf;}
+  /* Tabs / nav */
+  .tabs{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--border);}
+  .tab{padding:10px 16px;font-size:14px;font-weight:600;color:var(--ink-soft);border-bottom:2px solid transparent;cursor:pointer;background:none;border-radius:8px 8px 0 0;}
+  .tab:hover{background:rgba(184,137,43,0.08);}
+  .tab.active{color:var(--ink);border-bottom-color:var(--gold);background:rgba(184,137,43,0.08);}
+  /* Expense list */
+  .expense-item{display:flex;align-items:flex-start;gap:14px;padding:16px 8px;border-bottom:1px solid var(--paper-line);border-radius:8px;transition:background .15s ease, transform .1s ease;}
+  .expense-item:hover{background:rgba(184,137,43,0.06);transform:translateX(2px);}
+  .expense-item:last-child{border-bottom:none;}
+  .expense-icon{width:38px;height:38px;border-radius:10px;background:var(--paper);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0;}
+  .expense-desc{flex:1;}
+  .expense-desc .title{font-weight:600;font-size:15px;}
+  .expense-desc .meta{font-size:12px;color:var(--ink-soft);margin-top:3px;}
+  .expense-amt{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:16px;color:var(--ink);white-space:nowrap;}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;}
+  .chip{font-size:11px;background:var(--paper);border:1px solid var(--border);padding:3px 10px;border-radius:20px;color:var(--ink-soft);font-weight:500;}
+  /* Checkbox split list */
+  .split-list{display:flex;flex-direction:column;gap:2px;max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:6px;background:var(--paper-raised);}
+  .split-row{display:flex;align-items:center;gap:10px;font-size:14px;padding:8px 10px;border-radius:7px;transition:background .12s ease;cursor:pointer;}
+  .split-row:hover{background:var(--paper);}
+  .split-row input{width:auto;accent-color:var(--gold);}
+  .row{display:flex;gap:12px;flex-wrap:wrap;}
+  .row > *{flex:1;min-width:140px;}
+  /* Members */
+  .member-row{display:flex;align-items:center;gap:12px;padding:13px 6px;border-bottom:1px solid var(--paper-line);border-radius:8px;transition:background .15s ease;}
+  .member-row:hover{background:rgba(184,137,43,0.05);}
+  .member-row:last-child{border-bottom:none;}
+  .avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg, var(--ink), #2c4374);color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Fraunces',serif;font-weight:600;flex-shrink:0;}
+  .member-info{flex:1;min-width:0;}
+  .member-info .name{font-weight:600;font-size:14px;}
+  .member-info .email{font-size:12px;color:var(--ink-soft);}
+  .badge{font-size:10px;padding:3px 9px;border-radius:20px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;}
+  .badge.admin{background:var(--gold);color:#fff;}
+  .badge.member{background:var(--paper);border:1px solid var(--border);color:var(--ink-soft);}
+  .badge.invited{background:#EEE6C8;color:#8A6D1D;}
+  .badge.pending{background:#F0DCDC;color:var(--debt);}
+  .member-actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;}
+  .empty{text-align:center;color:var(--ink-soft);font-size:14px;padding:44px 10px;}
+  .empty .emoji{font-size:34px;display:block;margin-bottom:10px;}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(20px);opacity:0;
+    display:flex;align-items:center;gap:8px;background:var(--ink);color:#fff;padding:12px 20px;border-radius:10px;
+    font-size:13px;font-weight:500;box-shadow:var(--shadow-lg);z-index:50;transition:transform .25s ease, opacity .25s ease;
+    max-width:calc(100vw - 32px);text-align:left;}
+  .toast.show{transform:translateX(-50%) translateY(0);opacity:1;}
+  .toast-success{background:var(--credit);}
+  .toast-error{background:var(--debt);}
+  .toast-icon{font-size:14px;}
+  .setup-note{max-width:520px;margin:60px auto;padding:24px;background:var(--paper-raised);border:1px solid var(--border);border-radius:12px;font-size:14px;line-height:1.6;}
+  .setup-note code{background:var(--paper);padding:1px 5px;border-radius:4px;font-family:'IBM Plex Mono',monospace;}
+  .divider-text{font-size:12px;color:var(--ink-soft);text-align:center;margin:14px 0;}
+  @media (max-width:640px){
+    .wrap{padding:14px 14px 90px;}
+    .brand{margin:-14px -14px 18px;padding:12px 14px;flex-direction:column;align-items:flex-start;gap:8px;}
+    .brand-title h1{font-size:20px;}
+    .who{width:100%;justify-content:space-between;font-size:12px;}
+    .card{padding:16px;}
+    h3{font-size:17px;}
+    /* prevent iOS auto-zoom on input focus (needs >=16px) */
+    input,select{font-size:16px;padding:10px 12px;}
+    button{padding:10px 14px;}
+    .btn-small{padding:6px 10px;font-size:12px;}
+    /* settle board */
+    .settle-board{padding:18px;}
+    .settle-board h2{font-size:17px;}
+    .settle-row{flex-wrap:wrap;padding:10px 12px;}
+    .amt{margin-left:0;width:100%;text-align:right;}
+    .net-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;}
+    .net-card{padding:10px 12px;}
+    /* tabs scroll horizontally instead of wrapping/overflowing */
+    .tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+    .tabs::-webkit-scrollbar{display:none;}
+    .tab{padding:9px 13px;font-size:13px;white-space:nowrap;flex-shrink:0;}
+    /* form rows stack on mobile instead of squeezing side by side */
+    .row{flex-direction:column;gap:0;}
+    .row > *{min-width:100%;}
+    /* expense list */
+    .expense-item{padding:14px 4px;gap:10px;}
+    .expense-icon{width:34px;height:34px;font-size:15px;}
+    .expense-desc .title{font-size:14px;}
+    .expense-desc .meta{font-size:11.5px;}
+    .expense-amt{font-size:14px;}
+    /* members */
+    .member-row{flex-wrap:wrap;padding:12px 4px;}
+    .member-actions{width:100%;padding-left:48px;margin-top:2px;}
+    /* expense detail grid tightens automatically via inline auto-fit, just reduce gaps */
+    .setup-note{margin:32px auto;padding:18px;}
+  }
+  @media (max-width:380px){
+    .brand-title span{display:none;}
+    .net-grid{grid-template-columns:repeat(2,1fr);}
+    .member-actions{padding-left:0;}
+  }
+</style>
+</head>
+<body>
+
+<div id="setupScreen" style="display:none">
+  <div class="setup-note">
+    <h2 style="margin-bottom:10px;">Firebase config chahiye</h2>
+    <p>Ye app chalane ke liye apna Firebase project banayein aur neeche batayi gayi <code>firebaseConfig</code> is file ke <code>&lt;script type="module"&gt;</code> section ke shuru mein paste karein. Poori setup instructions is file ke sabse neeche comment mein di gayi hain.</p>
+  </div>
+</div>
+
+<div id="app" class="wrap" style="display:none"></div>
+<div id="toastHost"></div>
+
+<script type="module">
+/* ============================================================
+   1) APNA FIREBASE CONFIG YAHAN PASTE KAREIN
+   (Firebase Console > Project Settings > General > Your apps > Web app)
+   ============================================================ */
+const firebaseConfig = {
+  apiKey: "AIzaSyDFRrb4VZGB6wFG2uCnqq8uwdWBriQEW1o",
+  authDomain: "room-58166.firebaseapp.com",
+  databaseURL: "https://room-58166-default-rtdb.firebaseio.com",
+  projectId: "room-58166",
+  storageBucket: "room-58166.firebasestorage.app",
+  messagingSenderId: "11760563800",
+  appId: "1:11760563800:web:b2d8f9625a44898b09bc2d",
+  measurementId: "G-6VN1MGVWCD"
+};
+
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  signOut, onAuthStateChanged, updateProfile
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore, collection, doc, setDoc, updateDoc, deleteDoc, addDoc,
+  getDocs, getDoc, query, where, onSnapshot, serverTimestamp, orderBy
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "YOUR_API_KEY") {
+  document.getElementById('setupScreen').style.display = 'block';
+} else {
+  document.getElementById('app').style.display = 'block';
+  runApp();
+}
+
+function runApp(){
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+const membersCol = collection(db, "members");
+const expensesCol = collection(db, "expenses");
+const invitesCol = collection(db, "invites"); // doc id = email
+
+let currentUser = null;   // firebase auth user
+let myMember = null;      // my member doc {id,...}
+let allMembers = [];      // active + pending (invites live separately now)
+let allExpenses = [];
+let allInvites = [];      // pending invites {id(=email), name, email, createdAt}
+let unsubMembers = null, unsubExpenses = null, unsubInvites = null;
+
+const DESCRIPTION_SUGGESTIONS = ['Grocery','Rent','Electricity Bill','Water Bill','Gas','Internet / WiFi','Maintenance','Cleaning','Food / Eating Out','Vegetables','Milk','Other'];
+const EDIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
+function parseRoute(){
+  const hash = location.hash.replace(/^#\/?/, '');
+  const parts = hash.split('/').filter(Boolean);
+  if (parts.length === 0) return {page:'dashboard'};
+  if (parts[0] === 'add') return {page:'add'};
+  if (parts[0] === 'members') return {page:'members'};
+  if (parts[0] === 'expense' && parts[1]) return {page: parts[2]==='edit' ? 'editExpense' : 'expenseDetail', id: parts[1]};
+  return {page:'dashboard'};
+}
+function goTo(hash){ location.hash = hash; }
+window.addEventListener('hashchange', ()=> render());
+
+const appEl = document.getElementById('app');
+
+function toast(text, type='info'){
+  const host = document.getElementById('toastHost');
+  const el = document.createElement('div');
+  el.className = 'toast toast-' + type;
+  const icon = type==='error' ? '⚠️' : type==='success' ? '✓' : 'ℹ️';
+  el.innerHTML = `<span class="toast-icon">${icon}</span><span>${escapeHtml(text)}</span>`;
+  host.appendChild(el);
+  requestAnimationFrame(()=> el.classList.add('show'));
+  setTimeout(()=> { el.classList.remove('show'); setTimeout(()=>el.remove(), 250); }, 3200);
+}
+
+function money(n){
+  const v = Math.round((n + Number.EPSILON) * 100) / 100;
+  return '₹' + Math.abs(v).toLocaleString('en-IN', {maximumFractionDigits:2});
+}
+
+function initials(name){
+  return (name||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]?.toUpperCase()).join('');
+}
+
+/* ---------------- AUTH STATE ---------------- */
+onAuthStateChanged(auth, async (user) => {
+  currentUser = user;
+  if (unsubMembers) unsubMembers();
+  if (unsubExpenses) { unsubExpenses(); unsubExpenses = null; }
+  if (unsubInvites) unsubInvites();
+
+  if (!user) {
+    myMember = null; allMembers = []; allExpenses = []; allInvites = [];
+    renderAuthScreen();
+    return;
+  }
+
+  unsubInvites = onSnapshot(query(invitesCol),
+    (snap) => { allInvites = snap.docs.map(d => ({id:d.id, ...d.data()})); render(); },
+    (err) => { toast('Invites read error: ' + err.message, 'error'); }
+  );
+
+  // live listen to members
+  unsubMembers = onSnapshot(query(membersCol), async (snap) => {
+    allMembers = snap.docs.map(d => ({id:d.id, ...d.data()}));
+    myMember = allMembers.find(m => m.uid === currentUser.uid) || null;
+
+    // auto-heal: if this signed-in user has no member doc yet (race condition,
+    // or rules weren't published yet during their original signup), fix it now.
+    if (!myMember) {
+      try{
+        const invSnap = await getDoc(doc(db,'invites', currentUser.email));
+        if (invSnap.exists()) {
+          const inv = invSnap.data();
+          await setDoc(doc(db,'members', currentUser.uid), {
+            name: inv.name || currentUser.displayName || currentUser.email.split('@')[0],
+            email: currentUser.email, role:'member', status:'active',
+            uid: currentUser.uid, createdAt: serverTimestamp()
+          });
+          await deleteDoc(doc(db,'invites', currentUser.email));
+          return; // snapshot will refire
+        }
+        const displayName = currentUser.displayName || currentUser.email.split('@')[0];
+        if (allMembers.length === 0) {
+          // no members exist at all yet -> this user becomes the first admin
+          await setDoc(doc(db,'members', currentUser.uid), {
+            name: displayName, email: currentUser.email, role:'admin', status:'active',
+            uid: currentUser.uid, createdAt: serverTimestamp()
+          });
+          return;
+        }
+        const alreadyHasDocById = allMembers.find(m => m.id === currentUser.uid);
+        if (!alreadyHasDocById) {
+          // members exist but none match this user -> create a pending request
+          await setDoc(doc(db,'members', currentUser.uid), {
+            name: displayName, email: currentUser.email, role:'member', status:'pending',
+            uid: currentUser.uid, createdAt: serverTimestamp()
+          });
+          return;
+        }
+      }catch(e){
+        toast('Profile setup error: ' + (e.message || 'profile set up nahi ho paya'), 'error');
+      }
+    }
+
+    // only an ACTIVE member is allowed (by the Firestore rules) to read expenses.
+    // Start the listener once they become active; stop it if they ever aren't.
+    const isActiveNow = myMember && myMember.status === 'active';
+    if (isActiveNow && !unsubExpenses) {
+      unsubExpenses = onSnapshot(query(expensesCol, orderBy('createdAt','desc')),
+        (esnap) => { allExpenses = esnap.docs.map(d => ({id:d.id, ...d.data()})); render(); },
+        (err) => { toast('Expenses read error: ' + err.message, 'error'); }
+      );
+    } else if (!isActiveNow && unsubExpenses) {
+      unsubExpenses(); unsubExpenses = null; allExpenses = [];
+    }
+
+    render();
+  }, (err) => {
+    toast('Members read error: ' + err.message, 'error');
+  });
+});
+
+/* ---------------- SIGNUP / LOGIN LOGIC ---------------- */
+async function handleSignup(name, email, password){
+  const cred = await createUserWithEmailAndPassword(auth, email, password);
+  await updateProfile(cred.user, {displayName: name});
+
+  // check for an invite matching this email
+  const invSnap = await getDoc(doc(db,'invites', email));
+  if (invSnap.exists()) {
+    await setDoc(doc(db,'members', cred.user.uid), {
+      name, email, role:'member', status:'active', uid: cred.user.uid, createdAt: serverTimestamp()
+    });
+    await deleteDoc(doc(db,'invites', email));
+    return;
+  }
+
+  // if no members exist yet at all, first user becomes admin automatically
+  const allSnap = await getDocs(query(membersCol));
+  if (allSnap.empty) {
+    await setDoc(doc(db,'members', cred.user.uid), {
+      name, email, role:'admin', status:'active', uid: cred.user.uid, createdAt: serverTimestamp()
+    });
+    return;
+  }
+
+  // otherwise, create a pending request awaiting admin approval
+  await setDoc(doc(db,'members', cred.user.uid), {
+    name, email, role:'member', status:'pending', uid: cred.user.uid, createdAt: serverTimestamp()
+  });
+}
+
+async function handleLogin(email, password){
+  await signInWithEmailAndPassword(auth, email, password);
+}
+
+async function handleLogout(){
+  await signOut(auth);
+}
+
+/* ---------------- ADMIN ACTIONS ---------------- */
+async function inviteMember(name, email){
+  const existsMember = allMembers.find(m => m.email === email);
+  if (existsMember) { toast('Ye email pehle se member hai'); return; }
+  const existsInvite = allInvites.find(i => i.id === email);
+  if (existsInvite) { toast('Ye email pehle se invited hai'); return; }
+  try{
+    await setDoc(doc(db,'invites', email), {name, email, createdAt: serverTimestamp()});
+    toast('Invite add ho gaya — wo email se signup karke join kar sakta hai ✓', 'success');
+  }catch(e){ toast('Error: ' + (e.message || 'invite add nahi ho paya'), 'error'); }
+}
+
+async function cancelInvite(email){
+  try{ await deleteDoc(doc(db,'invites', email)); toast('Invite cancel ho gaya ✓', 'success'); }
+  catch(e){ toast('Error: ' + (e.message || 'cancel nahi ho paya'), 'error'); }
+}
+
+async function approveMember(id){
+  try{ await updateDoc(doc(db,'members',id), {status:'active'}); toast('Member approve ho gaya ✓', 'success'); }
+  catch(e){ toast('Error: ' + (e.message || 'approve nahi ho paya'), 'error'); }
+}
+
+async function setRole(id, role){
+  try{ await updateDoc(doc(db,'members',id), {role}); }
+  catch(e){ toast('Error: ' + (e.message || 'role update nahi ho paya'), 'error'); }
+}
+
+async function updateMemberName(id, name){
+  try{ await updateDoc(doc(db,'members',id), {name}); }
+  catch(e){ toast('Error: ' + (e.message || 'naam update nahi ho paya'), 'error'); }
+}
+
+async function removeMember(id){
+  if (!confirm('Is member ko remove karna hai? Unki access khatam ho jayegi.')) return;
+  try{ await deleteDoc(doc(db,'members',id)); toast('Member remove ho gaya ✓', 'success'); }
+  catch(e){ toast('Error: ' + (e.message || 'remove nahi ho paya'), 'error'); }
+}
+
+/* ---------------- EXPENSES ---------------- */
+async function addExpense(description, amount, splitAmong){
+  // paidBy is always the person adding the expense — not user-selectable on add.
+  const paidBy = currentUser.uid;
+  if (!description || !amount || amount<=0 || splitAmong.length===0){
+    toast('Sab fields sahi se bharein'); return false;
+  }
+  try{
+    await addDoc(expensesCol, {
+      description, amount:Number(amount), paidBy, splitAmong,
+      createdBy: currentUser.uid, createdAt: serverTimestamp(), updatedAt: null
+    });
+    toast('Kharcha add ho gaya ✓', 'success');
+    return true;
+  }catch(e){
+    toast('Error: ' + (e.message || 'kharcha add nahi ho paya'), 'error');
+    return false;
+  }
+}
+
+async function updateExpense(id, description, amount, paidBy, splitAmong){
+  if (!description || !amount || amount<=0 || !paidBy || splitAmong.length===0){
+    toast('Sab fields sahi se bharein'); return false;
+  }
+  try{
+    await updateDoc(doc(db,'expenses',id), {
+      description, amount:Number(amount), paidBy, splitAmong,
+      updatedAt: serverTimestamp()
+    });
+    toast('Kharcha update ho gaya ✓', 'success');
+    return true;
+  }catch(e){
+    toast('Error: ' + (e.message || 'update nahi ho paya'), 'error');
+    return false;
+  }
+}
+
+async function deleteExpense(id){
+  if (!confirm('Ye kharcha delete karna hai?')) return;
+  try{
+    await deleteDoc(doc(db,'expenses',id));
+    goTo('#/');
+  }catch(e){
+    toast('Error: ' + (e.message || 'delete nahi ho paya'), 'error');
+  }
+}
+
+function canEdit(exp){
+  const isAdmin = myMember && myMember.role === 'admin';
+  if (isAdmin) return true;
+  if (!exp.createdAt || exp.createdBy !== currentUser.uid) return false;
+  const createdMs = exp.createdAt.toMillis ? exp.createdAt.toMillis() : 0;
+  return (Date.now() - createdMs) <= EDIT_WINDOW_MS;
+}
+
+function formatDateTime(ts){
+  if (!ts || !ts.toDate) return '—';
+  const d = ts.toDate();
+  return d.toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'}) + ' · ' +
+         d.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'});
+}
+
+/* ---------------- BALANCE ENGINE ---------------- */
+function computeBalances(){
+  const activeMembers = allMembers.filter(m=>m.status==='active');
+  const net = {}; // uid -> net (positive = should receive, negative = owes)
+  activeMembers.forEach(m => net[m.uid] = 0);
+
+  allExpenses.forEach(exp => {
+    const n = exp.splitAmong?.length || 0;
+    if (!n) return;
+    const share = exp.amount / n;
+    if (net[exp.paidBy] !== undefined) net[exp.paidBy] += exp.amount;
+    exp.splitAmong.forEach(uid => {
+      if (net[uid] !== undefined) net[uid] -= share;
+    });
+  });
+
+  // simplify into minimal transactions
+  const debtors = [], creditors = [];
+  Object.entries(net).forEach(([uid, val]) => {
+    if (val < -0.5) debtors.push({uid, amt:-val});
+    else if (val > 0.5) creditors.push({uid, amt:val});
+  });
+  debtors.sort((a,b)=>b.amt-a.amt);
+  creditors.sort((a,b)=>b.amt-a.amt);
+
+  const txns = [];
+  let i=0, j=0;
+  while (i<debtors.length && j<creditors.length){
+    const d = debtors[i], c = creditors[j];
+    const amt = Math.min(d.amt, c.amt);
+    txns.push({from:d.uid, to:c.uid, amt});
+    d.amt -= amt; c.amt -= amt;
+    if (d.amt < 0.5) i++;
+    if (c.amt < 0.5) j++;
+  }
+  return {net, txns};
+}
+
+function nameFor(uid){
+  const m = allMembers.find(mm => mm.uid === uid);
+  return m ? m.name : 'Unknown';
+}
+
+/* ---------------- RENDER ---------------- */
+function render(){
+  if (!currentUser) return renderAuthScreen();
+  if (!myMember) return renderLoading();
+  if (myMember.status === 'pending') return renderPending();
+  renderMainApp();
+}
+
+function renderLoading(){
+  appEl.innerHTML = `<div class="center-screen"><div style="text-align:center;"><div class="spinner"></div><p style="color:var(--ink-soft);font-size:14px;">Load ho raha hai…</p></div></div>`;
+}
+
+function renderPending(){
+  appEl.innerHTML = `
+    <div class="center-screen">
+      <div class="card auth-card" style="text-align:center">
+        <h2 style="margin-bottom:10px;">Approval ka wait hai</h2>
+        <p style="color:var(--ink-soft);font-size:14px;line-height:1.6;">
+          Aapka account ban gaya hai, lekin room join karne ke liye admin ki approval chahiye.
+          Admin se baat karein ya thodi der baad refresh karein.
+        </p>
+        <div style="margin-top:16px;"><button class="btn-ghost" id="logoutBtn">Logout</button></div>
+      </div>
+    </div>`;
+  document.getElementById('logoutBtn').onclick = handleLogout;
+}
+
+function renderAuthScreen(){
+  appEl.innerHTML = `
+    <div class="center-screen">
+      <div class="card auth-card">
+        <div class="brand-title" style="margin-bottom:18px;justify-content:center;width:100%;">
+          <h1 style="font-size:28px;">📒 Khata</h1><span>room ledger</span>
+        </div>
+        <div class="auth-tabs">
+          <button id="tabLogin" class="active">Login</button>
+          <button id="tabSignup">Signup</button>
+        </div>
+        <div id="authForm"></div>
+      </div>
+    </div>`;
+  let mode = 'login';
+  const formHost = document.getElementById('authForm');
+  const tabLogin = document.getElementById('tabLogin');
+  const tabSignup = document.getElementById('tabSignup');
+
+  function draw(){
+    tabLogin.classList.toggle('active', mode==='login');
+    tabSignup.classList.toggle('active', mode==='signup');
+    formHost.innerHTML = `
+      ${mode==='signup' ? `<div class="field"><label>Naam</label><input id="fName" placeholder="Aapka naam"/></div>` : ''}
+      <div class="field"><label>Email</label><input id="fEmail" type="email" placeholder="you@example.com"/></div>
+      <div class="field"><label>Password</label><input id="fPass" type="password" placeholder="••••••••"/></div>
+      <button class="btn-primary" id="fSubmit" style="width:100%;">${mode==='login'?'Login':'Signup'}</button>
+      <div class="err" id="fErr"></div>
+      ${mode==='signup' ? `<div class="divider-text">Pehla signup karne wala automatically admin ban jayega. Uske baad naye log admin ke invite se ya approval se join karenge.</div>`:''}
+    `;
+    document.getElementById('fSubmit').onclick = async () => {
+      const errEl = document.getElementById('fErr');
+      errEl.textContent = '';
+      const email = document.getElementById('fEmail').value.trim();
+      const pass = document.getElementById('fPass').value;
+      try{
+        if (mode==='signup'){
+          const name = document.getElementById('fName').value.trim();
+          if (!name || !email || !pass) { errEl.textContent = 'Sab fields bharein'; return; }
+          await handleSignup(name, email, pass);
+        } else {
+          if (!email || !pass) { errEl.textContent = 'Email aur password bharein'; return; }
+          await handleLogin(email, pass);
+        }
+      }catch(e){
+        errEl.textContent = friendlyError(e);
+      }
+    };
+  }
+  tabLogin.onclick = ()=>{mode='login'; draw();};
+  tabSignup.onclick = ()=>{mode='signup'; draw();};
+  draw();
+}
+
+function friendlyError(e){
+  const c = e.code || '';
+  if (c.includes('email-already-in-use')) return 'Ye email pehle se registered hai — Login try karein.';
+  if (c.includes('weak-password')) return 'Password kam se kam 6 characters ka hona chahiye.';
+  if (c.includes('invalid-credential') || c.includes('wrong-password') || c.includes('user-not-found')) return 'Email ya password galat hai.';
+  if (c.includes('invalid-email')) return 'Email sahi format mein likhein.';
+  return e.message || 'Kuch galat ho gaya, dobara try karein.';
+}
+
+function renderMainApp(){
+  const isAdmin = myMember.role === 'admin';
+  const activeMembers = allMembers.filter(m=>m.status==='active');
+  const route = parseRoute();
+
+  appEl.innerHTML = `
+    <div class="brand">
+      <div class="brand-title"><h1>📒 Khata</h1><span>room ledger</span></div>
+      <div class="who">
+        <div class="avatar" style="width:28px;height:28px;font-size:12px;">${initials(myMember.name)}</div>
+        <div><b>${escapeHtml(myMember.name)}</b> <span class="pill">${myMember.role}</span></div>
+        <button class="btn-ghost btn-small" id="logoutBtn">Logout</button>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab ${route.page==='dashboard'?'active':''}" data-nav="#/">Home</button>
+      <button class="tab ${route.page==='add'?'active':''}" data-nav="#/add">+ Naya Kharcha</button>
+      ${isAdmin ? `<button class="tab ${route.page==='members'?'active':''}" data-nav="#/members">Members</button>` : ''}
+    </div>
+
+    <div id="page-host"></div>
+  `;
+
+  document.getElementById('logoutBtn').onclick = handleLogout;
+  document.querySelectorAll('[data-nav]').forEach(btn=>{
+    btn.onclick = ()=> goTo(btn.dataset.nav);
+  });
+
+  const host = document.getElementById('page-host');
+
+  if (route.page === 'dashboard') {
+    renderDashboard(host, activeMembers);
+  } else if (route.page === 'add') {
+    renderExpenseForm(host, {mode:'add', activeMembers});
+  } else if (route.page === 'members') {
+    if (!isAdmin) { goTo('#/'); return; }
+    renderMembers(host, isAdmin, activeMembers);
+  } else if (route.page === 'expenseDetail') {
+    const exp = allExpenses.find(e=>e.id===route.id);
+    if (!exp) { host.innerHTML = `<div class="card empty">Ye kharcha nahi mila (delete ho chuka ho sakta hai).</div>`; return; }
+    renderExpenseDetail(host, exp);
+  } else if (route.page === 'editExpense') {
+    const exp = allExpenses.find(e=>e.id===route.id);
+    if (!exp) { host.innerHTML = `<div class="card empty">Ye kharcha nahi mila.</div>`; return; }
+    if (!canEdit(exp)) { host.innerHTML = `<div class="card empty">Ab aap ye kharcha edit nahi kar sakte (10 minute ka waqt khatam ho chuka hai). Sirf admin ab isse edit kar sakta hai.</div>`; return; }
+    renderExpenseForm(host, {mode:'edit', expense:exp, activeMembers});
+  }
+}
+
+function renderDashboard(host, activeMembers){
+  const {net, txns} = computeBalances();
+  host.innerHTML = `
+    <div class="settle-board">
+      <h2>Kis ne kise dena hai</h2>
+      <div class="settle-list">
+        ${txns.length ? txns.map(t => `
+          <div class="settle-row">
+            <b>${escapeHtml(nameFor(t.from))}</b> <span class="arrow">owes →</span> <b>${escapeHtml(nameFor(t.to))}</b>
+            <span class="amt">${money(t.amt)}</span>
+          </div>`).join('') : `<div class="all-settled">✓ Sab hisaab barabar hai — koi kisi ko kuch nahi deta.</div>`}
+      </div>
+      <div class="net-grid">
+        ${activeMembers.map(m => {
+          const v = net[m.uid] || 0;
+          const cls = v>0.5?'pos': v<-0.5?'neg':'zero';
+          const label = v>0.5? 'lena hai' : v<-0.5 ? 'dena hai' : 'settled';
+          return `<div class="net-card"><div class="name">${escapeHtml(m.name)}</div><div class="val ${cls}">${money(v)}</div><div class="name" style="opacity:.6;font-size:11px;">${label}</div></div>`;
+        }).join('')}
+      </div>
+    </div>
+    <div id="sec-board"></div>
+  `;
+  renderExpenseList(document.getElementById('sec-board'), activeMembers);
+}
+
+function renderExpenseList(host, activeMembers){
+  if (!allExpenses.length){
+    host.innerHTML = `<div class="card empty"><span class="emoji">🧾</span>Abhi tak koi kharcha add nahi hua.<br>"+ Naya Kharcha" se shuru karein.</div>`;
+    return;
+  }
+  host.innerHTML = `<div class="card">
+    ${allExpenses.map(exp => `
+      <div class="expense-item" data-open="${exp.id}" style="cursor:pointer;">
+        <div class="expense-icon">🧾</div>
+        <div class="expense-desc">
+          <div class="title">${escapeHtml(exp.description)}</div>
+          <div class="meta">Paid by <b>${escapeHtml(nameFor(exp.paidBy))}</b> · ${exp.splitAmong?.length||0} logon mein split · ${formatDateTime(exp.createdAt)}</div>
+          <div class="chips">${(exp.splitAmong||[]).map(uid=>`<span class="chip">${escapeHtml(nameFor(uid))}</span>`).join('')}</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="expense-amt">${money(exp.amount)}</div>
+        </div>
+      </div>
+    `).join('')}
+  </div>`;
+  host.querySelectorAll('[data-open]').forEach(el=>{
+    el.onclick = ()=> goTo('#/expense/' + el.dataset.open);
+  });
+}
+
+function renderExpenseDetail(host, exp){
+  const editable = canEdit(exp);
+  const isAdmin = myMember.role === 'admin';
+  host.innerHTML = `
+    <button class="btn-ghost btn-small" id="backBtn" style="margin-bottom:16px;">← Wapas</button>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+        <div style="display:flex;gap:14px;align-items:flex-start;">
+          <div class="expense-icon" style="width:48px;height:48px;font-size:22px;">🧾</div>
+          <div>
+            <h2 style="font-size:22px;margin-bottom:6px;">${escapeHtml(exp.description)}</h2>
+          </div>
+        </div>
+        <div class="expense-amt" style="font-size:26px;">${money(exp.amount)}</div>
+      </div>
+
+      <div style="margin-top:20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;">
+        <div>
+          <label>Kisne pay kiya</label>
+          <div style="font-size:15px;font-weight:600;">${escapeHtml(nameFor(exp.paidBy))}</div>
+        </div>
+        <div>
+          <label>Date &amp; Time</label>
+          <div style="font-size:15px;font-weight:600;">${formatDateTime(exp.createdAt)}</div>
+        </div>
+        <div>
+          <label>Per person share</label>
+          <div style="font-size:15px;font-weight:600;">${money(exp.amount / (exp.splitAmong?.length||1))}</div>
+        </div>
+        ${exp.updatedAt ? `<div><label>Last edited</label><div style="font-size:15px;font-weight:600;">${formatDateTime(exp.updatedAt)}</div></div>` : ''}
+      </div>
+
+      <div style="margin-top:18px;">
+        <label>Kin logon ke liye kharcha hua</label>
+        <div class="chips">${(exp.splitAmong||[]).map(uid=>`<span class="chip">${escapeHtml(nameFor(uid))}</span>`).join('')}</div>
+      </div>
+
+      <div style="margin-top:22px;display:flex;gap:10px;flex-wrap:wrap;">
+        ${editable ? `<button class="btn-primary" id="editBtn">Edit Karein</button>` : `<span style="font-size:12px;color:var(--ink-soft);align-self:center;">${isAdmin ? '' : '10 minute ka edit window khatam ho chuka hai — ab sirf admin edit kar sakta hai.'}</span>`}
+        ${isAdmin ? `<button class="btn-danger" id="delBtn">Delete Karein</button>` : ''}
+      </div>
+    </div>
+  `;
+  document.getElementById('backBtn').onclick = ()=> goTo('#/');
+  const editBtn = document.getElementById('editBtn');
+  if (editBtn) editBtn.onclick = ()=> goTo('#/expense/' + exp.id + '/edit');
+  const delBtn = document.getElementById('delBtn');
+  if (delBtn) delBtn.onclick = ()=> deleteExpense(exp.id);
+}
+
+function renderExpenseForm(host, {mode, expense, activeMembers}){
+  const isEdit = mode === 'edit';
+  const isAdmin = myMember && myMember.role === 'admin';
+  const desc = isEdit ? expense.description : '';
+  const amt = isEdit ? expense.amount : '';
+  const paidBy = isEdit ? expense.paidBy : currentUser.uid;
+  const splitSet = new Set(isEdit ? (expense.splitAmong||[]) : activeMembers.map(m=>m.uid));
+
+  // "Kisne pay kiya" is only ever changeable by an admin, and only while editing.
+  // On add, it's always the person creating the expense.
+  const paidByEditable = isEdit && isAdmin;
+
+  host.innerHTML = `
+    ${isEdit ? `<button class="btn-ghost btn-small" id="backBtn" style="margin-bottom:16px;">← Wapas</button>` : ''}
+    <div class="card">
+      <h3 style="margin-bottom:16px;">${isEdit ? 'Kharcha edit karein' : 'Naya kharcha add karein'}</h3>
+      <div class="row">
+        <div class="field">
+          <label>Description</label>
+          <input id="eDesc" list="descSuggestions" placeholder="Chunein ya khud likhein" value="${escapeHtml(desc)}" autocomplete="off"/>
+          <datalist id="descSuggestions">
+            ${DESCRIPTION_SUGGESTIONS.map(d=>`<option value="${escapeHtml(d)}"></option>`).join('')}
+          </datalist>
+        </div>
+        <div class="field"><label>Amount</label><input id="eAmt" type="number" min="0" step="0.01" placeholder="0.00" value="${amt}"/></div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>Kisne pay kiya</label>
+          ${paidByEditable
+            ? `<select id="ePaidBy">${activeMembers.map(m=>`<option value="${m.uid}" ${m.uid===paidBy?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}</select>`
+            : `<input value="${escapeHtml(nameFor(paidBy))}" disabled style="opacity:.7;"/>`
+          }
+        </div>
+      </div>
+      <div class="field">
+        <label>Kin logon mein split ho (jinke liye kharcha hua)</label>
+        <div class="split-list">
+          ${activeMembers.map(m=>`
+            <label class="split-row"><input type="checkbox" class="splitChk" value="${m.uid}" ${splitSet.has(m.uid)?'checked':''}/> ${escapeHtml(m.name)}</label>
+          `).join('')}
+        </div>
+      </div>
+      <button class="btn-primary" id="submitExpBtn">${isEdit ? 'Update Karein' : 'Kharcha Add Karein'}</button>
+      ${isEdit ? `<p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">Note: normal member sirf pehle 10 minute tak edit kar sakta hai, uske baad sirf admin edit kar sakta hai. "Kisne pay kiya" sirf admin badal sakta hai.</p>` : ''}
+    </div>`;
+
+  const backBtn = document.getElementById('backBtn');
+  if (backBtn) backBtn.onclick = ()=> goTo('#/expense/' + expense.id);
+
+  document.getElementById('submitExpBtn').onclick = async ()=>{
+    const d = document.getElementById('eDesc').value.trim();
+    const a = parseFloat(document.getElementById('eAmt').value);
+    const pb = paidByEditable ? document.getElementById('ePaidBy').value : paidBy;
+    const split = Array.from(document.querySelectorAll('.splitChk:checked')).map(c=>c.value);
+    let ok;
+    if (isEdit) ok = await updateExpense(expense.id, d, a, pb, split);
+    else ok = await addExpense(d, a, split);
+    if (ok) goTo(isEdit ? '#/expense/' + expense.id : '#/');
+  };
+}
+
+function renderMembers(host, isAdmin, activeMembers){
+  const invited = allInvites;
+  const pending = allMembers.filter(m=>m.status==='pending');
+
+  host.innerHTML = `
+    ${isAdmin ? `
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-bottom:14px;">Naya member invite karein</h3>
+      <div class="row">
+        <div class="field"><label>Naam</label><input id="mName" placeholder="Naam"/></div>
+        <div class="field"><label>Email</label><input id="mEmail" type="email" placeholder="email@example.com"/></div>
+      </div>
+      <button class="btn-primary" id="inviteBtn">Invite Add Karein</button>
+      <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;">Ye email jab signup karega, wo automatically room mein add ho jayega.</p>
+    </div>` : ''}
+
+    ${pending.length ? `
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-bottom:10px;">Approval ke liye pending</h3>
+      ${pending.map(m => `
+        <div class="member-row">
+          <div class="avatar">${initials(m.name)}</div>
+          <div class="member-info"><div class="name">${escapeHtml(m.name)}</div><div class="email">${escapeHtml(m.email)}</div></div>
+          <span class="badge pending">Pending</span>
+          ${isAdmin ? `<div class="member-actions">
+            <button class="btn-primary btn-small" data-approve="${m.id}">Approve</button>
+            <button class="btn-danger btn-small" data-remove="${m.id}">Reject</button>
+          </div>` : ''}
+        </div>`).join('')}
+    </div>` : ''}
+
+    <div class="card">
+      <h3 style="margin-bottom:10px;">Room Members</h3>
+      ${activeMembers.map(m => `
+        <div class="member-row">
+          <div class="avatar">${initials(m.name)}</div>
+          <div class="member-info">
+            <div class="name">${escapeHtml(m.name)}</div>
+            <div class="email">${escapeHtml(m.email)}</div>
+          </div>
+          <span class="badge ${m.role}">${m.role}</span>
+          ${isAdmin ? `<div class="member-actions">
+            <button class="btn-ghost btn-small" data-rename="${m.id}">Rename</button>
+            <button class="btn-ghost btn-small" data-role="${m.id}" data-currentrole="${m.role}">${m.role==='admin' ? 'Make member' : 'Make admin'}</button>
+            ${m.uid !== currentUser.uid ? `<button class="btn-danger btn-small" data-remove="${m.id}">Remove</button>` : ''}
+          </div>` : ''}
+        </div>`).join('')}
+      ${invited.map(m => `
+        <div class="member-row">
+          <div class="avatar">${initials(m.name)}</div>
+          <div class="member-info"><div class="name">${escapeHtml(m.name)}</div><div class="email">${escapeHtml(m.email)}</div></div>
+          <span class="badge invited">Invited</span>
+          ${isAdmin ? `<div class="member-actions"><button class="btn-danger btn-small" data-cancel-invite="${m.id}">Cancel</button></div>` : ''}
+        </div>`).join('')}
+    </div>
+  `;
+
+  if (isAdmin){
+    const inviteBtn = document.getElementById('inviteBtn');
+    if (inviteBtn) inviteBtn.onclick = async ()=>{
+      const name = document.getElementById('mName').value.trim();
+      const email = document.getElementById('mEmail').value.trim();
+      if (!name || !email) { toast('Naam aur email dono bharein'); return; }
+      await inviteMember(name, email);
+      document.getElementById('mName').value=''; document.getElementById('mEmail').value='';
+    };
+    host.querySelectorAll('[data-approve]').forEach(b=> b.onclick = ()=> approveMember(b.dataset.approve));
+    host.querySelectorAll('[data-remove]').forEach(b=> b.onclick = ()=> removeMember(b.dataset.remove));
+    host.querySelectorAll('[data-cancel-invite]').forEach(b=> b.onclick = ()=> cancelInvite(b.dataset.cancelInvite));
+    host.querySelectorAll('[data-role]').forEach(b=> b.onclick = ()=> {
+      const newRole = b.dataset.currentrole === 'admin' ? 'member' : 'admin';
+      setRole(b.dataset.role, newRole);
+    });
+    host.querySelectorAll('[data-rename]').forEach(b=> b.onclick = ()=>{
+      const m = allMembers.find(x=>x.id===b.dataset.rename);
+      const newName = prompt('Naya naam:', m.name);
+      if (newName && newName.trim()) updateMemberName(m.id, newName.trim());
+    });
+  }
+}
+
+function escapeHtml(s){
+  return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+} // end runApp
+</script>
+
+<!--
+============================================================
+ SETUP INSTRUCTIONS
+============================================================
+1. Firebase project banayein: https://console.firebase.google.com
+2. Project settings > General > "Your apps" > Web app (</>) add karein,
+   aur wahan se milne wala firebaseConfig object upar wale
+   "APNA FIREBASE CONFIG YAHAN PASTE KAREIN" section mein paste karein.
+
+3. Authentication enable karein:
+   Build > Authentication > Sign-in method > "Email/Password" ON karein.
+
+4. Firestore Database banayein (production mode).
+
+5. Firestore Rules (Build > Firestore Database > Rules) mein ye paste karein:
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function myMember() {
+      return exists(/databases/$(database)/documents/members/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/members/$(request.auth.uid)).data
+        : null;
+    }
+    function isActiveMember() {
+      return isSignedIn() && myMember() != null && myMember().status == 'active';
+    }
+    function isAdmin() {
+      return isActiveMember() && myMember().role == 'admin';
+    }
+
+    match /members/{memberId} {
+      allow read: if isSignedIn();
+      // a user can only ever create their OWN member doc (signup / self-heal / claiming an invite)
+      allow create: if isSignedIn() && memberId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /invites/{inviteEmail} {
+      allow read: if isSignedIn();
+      allow create, update: if isAdmin();
+      // an invited person can delete/consume their own invite once they sign up
+      allow delete: if isAdmin() || (isSignedIn() && request.auth.token.email == inviteEmail);
+    }
+
+    match /expenses/{expenseId} {
+      allow read: if isActiveMember();
+      allow create: if isActiveMember() && request.resource.data.createdBy == request.auth.uid;
+      // Admin can edit anytime. The person who added the expense can only
+      // edit it within 10 minutes of creation; after that, only admin can.
+      allow update: if isAdmin() || (
+        isActiveMember() &&
+        resource.data.createdBy == request.auth.uid &&
+        request.time < resource.data.createdAt + duration.value(10, 'm')
+      );
+      allow delete: if isAdmin();
+    }
+  }
+}
+
+6. File ko save karke browser mein kholein (ya kisi bhi static host — Firebase
+   Hosting, Netlify, Vercel — par upload kar dein).
+
+KAISE KAAM KARTA HAI:
+- App mein alag alag pages hain (URL hash se): Home (#/), + Naya Kharcha (#/add),
+  Members (#/members, sirf admin ko dikhta hai), aur har kharche ka apna
+  detail page (#/expense/ID) jahan se edit page (#/expense/ID/edit) khulta hai.
+- Sabse pehla signup karne wala user automatically ADMIN ban jata hai.
+- Admin "Members" page se naye member ko email+naam se INVITE karta hai
+  (ye page normal members ko bilkul nahi dikhta). Jab wo email us naam se
+  signup karta hai, automatically room join ho jata hai.
+- Agar koi invite ke bina hi signup kar le, wo "pending" mein chala jata hai
+  aur admin ko approve/reject karna hota hai.
+- Admin kisi bhi member ko admin bana sakta hai, naam update kar sakta hai,
+  ya remove kar sakta hai (remove hote hi uski room access khatam ho jaati hai).
+- Kharcha add karte waqt "description" (dropdown suggestions se chunein ya
+  khud type karein), "amount", aur "kin logon mein split ho" select karein —
+  amount un logon mein barabar (equal) split ho jata hai. "Kisne pay kiya"
+  hamesha wahi hota hai jo kharcha add kar raha hai.
+- Kisi bhi kharche par click karke uska pura detail dekh sakte hain:
+  amount, kisne pay kiya, date/time, aur kin logon ke liye hua.
+- "Kisne pay kiya" field sirf admin edit page se badal sakta hai (agar kisi
+  aur ke naam se galti se add ho gaya ho). Normal member ye field edit nahi
+  kar sakta, sirf apna description/amount/split pehle 10 minute tak edit
+  kar sakta hai.
+- EDIT RULE: jis member ne kharcha add kiya hai, wo usse sirf 10 minute tak
+  edit kar sakta hai — uske baad usse edit ka button hi nahi dikhega.
+  Admin kisi bhi kharche ko hamesha edit kar sakta hai. Delete sirf admin
+  kar sakta hai. Ye rule client (app) aur server (Firestore rules) dono
+  jagah enforce hota hai, isliye koi bypass nahi kar sakta.
+- Sabse upar "Kis ne kise dena hai" board saare kharchon ko net karke
+  minimum transactions mein settle-up dikhata hai.
+
+NOTE: Ye pure client-side (browser + Firebase) app hai, isliye admin doosre
+users ka Firebase Auth account seedha delete nahi kar sakta (uske liye Cloud
+Function/Admin SDK backend chahiye hota). "Remove" karne se unki room access
+turant khatam ho jaati hai (Firestore rules ke through) — jo practically
+same cheez hai.
+============================================================
+-->
+</body>
+</html>
