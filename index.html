@@ -139,7 +139,7 @@
     .wrap{padding:14px 14px 90px;}
     .brand{margin:-14px -14px 18px;padding:12px 14px;flex-direction:column;align-items:flex-start;gap:8px;}
     .brand-title h1{font-size:20px;}
-    .who{width:100%;justify-content:space-between;font-size:12px;}
+    .who{width:100%;justify-content:space-between;font-size:12px;flex-wrap:wrap;row-gap:8px;}
     .card{padding:16px;}
     h3{font-size:17px;}
     /* prevent iOS auto-zoom on input focus (needs >=16px) */
@@ -192,7 +192,7 @@
 <div id="app" class="wrap" style="display:none"></div>
 <div id="toastHost"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script type="module">
 /* ============================================================
    1) APNA FIREBASE CONFIG YAHAN PASTE KAREIN
@@ -212,7 +212,8 @@ const firebaseConfig = {
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  signOut, onAuthStateChanged, updateProfile
+  signOut, onAuthStateChanged, updateProfile, sendPasswordResetEmail,
+  updatePassword, reauthenticateWithCredential, EmailAuthProvider
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, setDoc, updateDoc, deleteDoc, addDoc,
@@ -235,6 +236,7 @@ const membersCol = collection(db, "members");
 const expensesCol = collection(db, "expenses");
 const invitesCol = collection(db, "invites"); // doc id = email
 const settlementsCol = collection(db, "settlements");
+const paymentsCol = collection(db, "payments");
 
 let currentUser = null;   // firebase auth user
 let myMember = null;      // my member doc {id,...}
@@ -242,7 +244,8 @@ let allMembers = [];      // active + pending (invites live separately now)
 let allExpenses = [];
 let allInvites = [];      // pending invites {id(=email), name, email, createdAt}
 let allSettlements = [];  // past settlements, newest first
-let unsubMembers = null, unsubExpenses = null, unsubInvites = null, unsubSettlements = null;
+let allPayments = [];     // individual cash payments members have handed over, newest first
+let unsubMembers = null, unsubExpenses = null, unsubInvites = null, unsubSettlements = null, unsubPayments = null;
 let activeCharts = []; // Chart.js instances currently on screen, destroyed before each re-render
 
 const DESCRIPTION_SUGGESTIONS = ['Grocery','Rent','Electricity Bill','Water Bill','Gas','Internet / WiFi','Maintenance','Cleaning','Food / Eating Out','Vegetables','Milk','Other'];
@@ -255,6 +258,8 @@ function parseRoute(){
   if (parts[0] === 'add') return {page:'add'};
   if (parts[0] === 'reports') return {page:'reports'};
   if (parts[0] === 'charts') return {page:'charts'};
+  if (parts[0] === 'settle') return {page:'settle'};
+  if (parts[0] === 'account') return {page:'account'};
   if (parts[0] === 'members') return {page:'members'};
   if (parts[0] === 'expense' && parts[1]) return {page: parts[2]==='edit' ? 'editExpense' : 'expenseDetail', id: parts[1]};
   return {page:'dashboard'};
@@ -291,9 +296,10 @@ onAuthStateChanged(auth, async (user) => {
   if (unsubExpenses) { unsubExpenses(); unsubExpenses = null; }
   if (unsubInvites) unsubInvites();
   if (unsubSettlements) { unsubSettlements(); unsubSettlements = null; }
+  if (unsubPayments) { unsubPayments(); unsubPayments = null; }
 
   if (!user) {
-    myMember = null; allMembers = []; allExpenses = []; allInvites = []; allSettlements = [];
+    myMember = null; allMembers = []; allExpenses = []; allInvites = []; allSettlements = []; allPayments = [];
     renderAuthScreen();
     return;
   }
@@ -365,6 +371,15 @@ onAuthStateChanged(auth, async (user) => {
       );
     } else if (!isActiveNow && unsubSettlements) {
       unsubSettlements(); unsubSettlements = null; allSettlements = [];
+    }
+
+    if (isActiveNow && !unsubPayments) {
+      unsubPayments = onSnapshot(query(paymentsCol, orderBy('createdAt','desc')),
+        (psnap) => { allPayments = psnap.docs.map(d => ({id:d.id, ...d.data()})); render(); },
+        (err) => { toast('Payments read error: ' + err.message, 'error'); }
+      );
+    } else if (!isActiveNow && unsubPayments) {
+      unsubPayments(); unsubPayments = null; allPayments = [];
     }
 
     render();
@@ -513,6 +528,31 @@ async function createSettlement(settledUpToMs, net, txns){
   }
 }
 
+/* ---------------- PAYMENTS (manual cash given towards dues) ---------------- */
+async function createPayment(uid, amount, note){
+  if (!uid || !amount || amount<=0){ toast('Member aur amount sahi se bharein'); return false; }
+  try{
+    await addDoc(paymentsCol, {
+      uid, amount: Number(amount), note: (note||'').trim(),
+      createdAt: serverTimestamp(), createdBy: currentUser.uid
+    });
+    toast('Payment record ho gaya ✓', 'success');
+    return true;
+  }catch(e){
+    toast('Error: ' + (e.message || 'payment record nahi ho paya'), 'error');
+    return false;
+  }
+}
+
+async function deletePayment(id){
+  if (!confirm('Ye payment record delete karna hai?')) return;
+  try{
+    await deleteDoc(doc(db,'payments',id));
+  }catch(e){
+    toast('Error: ' + (e.message || 'delete nahi ho paya'), 'error');
+  }
+}
+
 function canEdit(exp){
   const isAdmin = myMember && myMember.role === 'admin';
   if (isAdmin) return true;
@@ -580,8 +620,10 @@ function groupByDescription(expenses){
 
 /* ---------------- BALANCE ENGINE ---------------- */
 // Computes net balances + minimal settle-up transactions using only expenses
-// with createdAt in (fromMs, toMs]. Also returns the total spent, per-member
-// paid totals, and the matching filtered expense list (already date-desc sorted).
+// (and manual payments) with createdAt in (fromMs, toMs]. Also returns the
+// total spent, per-member paid totals, and the matching filtered expense list
+// (already date-desc sorted). A "payment" is cash a member has personally
+// handed over towards their own due — it reduces their debt directly.
 function computeBalancesInRange(fromMs, toMs){
   const activeMembers = allMembers.filter(m=>m.status==='active');
   const net = {}, paidByMember = {};
@@ -607,7 +649,15 @@ function computeBalancesInRange(fromMs, toMs){
     });
   });
 
-  return {net, txns: minimalTxns(net), total, paidByMember, filteredExpenses};
+  const filteredPayments = [];
+  allPayments.forEach(p => {
+    const createdMs = p.createdAt ? tsToMillis(p.createdAt) : Date.now();
+    if (createdMs <= fromMs || createdMs > toMs) return;
+    filteredPayments.push(p);
+    if (net[p.uid] !== undefined) net[p.uid] += p.amount;
+  });
+
+  return {net, txns: minimalTxns(net), total, paidByMember, filteredExpenses, filteredPayments};
 }
 
 function minimalTxns(net){
@@ -678,7 +728,7 @@ function renderAuthScreen(){
         <div class="brand-title" style="margin-bottom:18px;justify-content:center;width:100%;">
           <h1 style="font-size:28px;">📒 Khata</h1><span>room ledger</span>
         </div>
-        <div class="auth-tabs">
+        <div class="auth-tabs" id="authTabs">
           <button id="tabLogin" class="active">Login</button>
           <button id="tabSignup">Signup</button>
         </div>
@@ -687,20 +737,50 @@ function renderAuthScreen(){
     </div>`;
   let mode = 'login';
   const formHost = document.getElementById('authForm');
+  const authTabs = document.getElementById('authTabs');
   const tabLogin = document.getElementById('tabLogin');
   const tabSignup = document.getElementById('tabSignup');
 
   function draw(){
+    authTabs.style.display = mode==='forgot' ? 'none' : 'flex';
     tabLogin.classList.toggle('active', mode==='login');
     tabSignup.classList.toggle('active', mode==='signup');
+
+    if (mode === 'forgot'){
+      formHost.innerHTML = `
+        <p style="font-size:13px;color:var(--ink-soft);margin-bottom:14px;">Apna email daalein — hum aapko password reset karne ke liye ek link bhejenge.</p>
+        <div class="field"><label>Email</label><input id="fResetEmail" type="email" placeholder="you@example.com"/></div>
+        <button class="btn-primary" id="fResetSubmit" style="width:100%;">Reset Link Bhejein</button>
+        <div class="err" id="fErr"></div>
+        <div class="msg" id="fMsg"></div>
+        <div class="divider-text"><a href="#" id="backToLogin" style="color:var(--gold);">← Wapas Login par jaayein</a></div>
+      `;
+      document.getElementById('backToLogin').onclick = (e)=>{ e.preventDefault(); mode='login'; draw(); };
+      document.getElementById('fResetSubmit').onclick = async ()=>{
+        const errEl = document.getElementById('fErr'), msgEl = document.getElementById('fMsg');
+        errEl.textContent = ''; msgEl.textContent = '';
+        const email = document.getElementById('fResetEmail').value.trim();
+        if (!email){ errEl.textContent = 'Email daalein'; return; }
+        try{
+          await sendPasswordResetEmail(auth, email);
+          msgEl.textContent = 'Reset link bhej diya gaya hai ✓ — apna inbox (aur spam folder) check karein.';
+        }catch(e){
+          errEl.textContent = friendlyError(e);
+        }
+      };
+      return;
+    }
+
     formHost.innerHTML = `
       ${mode==='signup' ? `<div class="field"><label>Naam</label><input id="fName" placeholder="Aapka naam"/></div>` : ''}
       <div class="field"><label>Email</label><input id="fEmail" type="email" placeholder="you@example.com"/></div>
       <div class="field"><label>Password</label><input id="fPass" type="password" placeholder="••••••••"/></div>
+      ${mode==='login' ? `<div style="text-align:right;margin:-8px 0 14px;"><a href="#" id="forgotLink" style="font-size:12.5px;color:var(--gold);">Password bhool gaye?</a></div>` : ''}
       <button class="btn-primary" id="fSubmit" style="width:100%;">${mode==='login'?'Login':'Signup'}</button>
       <div class="err" id="fErr"></div>
       ${mode==='signup' ? `<div class="divider-text">Pehla signup karne wala automatically admin ban jayega. Uske baad naye log admin ke invite se ya approval se join karenge.</div>`:''}
     `;
+    if (mode==='login') document.getElementById('forgotLink').onclick = (e)=>{ e.preventDefault(); mode='forgot'; draw(); };
     document.getElementById('fSubmit').onclick = async () => {
       const errEl = document.getElementById('fErr');
       errEl.textContent = '';
@@ -731,6 +811,7 @@ function friendlyError(e){
   if (c.includes('weak-password')) return 'Password kam se kam 6 characters ka hona chahiye.';
   if (c.includes('invalid-credential') || c.includes('wrong-password') || c.includes('user-not-found')) return 'Email ya password galat hai.';
   if (c.includes('invalid-email')) return 'Email sahi format mein likhein.';
+  if (c.includes('requires-recent-login')) return 'Suraksha ke liye dobara login karke try karein.';
   return e.message || 'Kuch galat ho gaya, dobara try karein.';
 }
 
@@ -745,6 +826,7 @@ function renderMainApp(){
       <div class="who">
         <div class="avatar" style="width:28px;height:28px;font-size:12px;">${initials(myMember.name)}</div>
         <div><b>${escapeHtml(myMember.name)}</b> <span class="pill">${myMember.role}</span></div>
+        <button class="btn-ghost btn-small" id="accountBtn">Account</button>
         <button class="btn-ghost btn-small" id="logoutBtn">Logout</button>
       </div>
     </div>
@@ -754,12 +836,14 @@ function renderMainApp(){
       <button class="tab ${route.page==='add'?'active':''}" data-nav="#/add">+ Naya Kharcha</button>
       <button class="tab ${route.page==='reports'?'active':''}" data-nav="#/reports">Reports</button>
       <button class="tab ${route.page==='charts'?'active':''}" data-nav="#/charts">Charts</button>
+      <button class="tab ${route.page==='settle'?'active':''}" data-nav="#/settle">Settle</button>
       ${isAdmin ? `<button class="tab ${route.page==='members'?'active':''}" data-nav="#/members">Members</button>` : ''}
     </div>
 
     <div id="page-host"></div>
   `;
 
+  document.getElementById('accountBtn').onclick = ()=> goTo('#/account');
   document.getElementById('logoutBtn').onclick = handleLogout;
   document.querySelectorAll('[data-nav]').forEach(btn=>{
     btn.onclick = ()=> goTo(btn.dataset.nav);
@@ -775,6 +859,10 @@ function renderMainApp(){
     renderReports(host, activeMembers, isAdmin);
   } else if (route.page === 'charts') {
     renderCharts(host, activeMembers);
+  } else if (route.page === 'settle') {
+    renderSettle(host, activeMembers, isAdmin);
+  } else if (route.page === 'account') {
+    renderAccount(host);
   } else if (route.page === 'members') {
     if (!isAdmin) { goTo('#/'); return; }
     renderMembers(host, isAdmin, activeMembers);
@@ -811,7 +899,7 @@ function renderDashboard(host, activeMembers){
           return `<div class="net-card"><div class="name">${escapeHtml(m.name)}</div><div class="val ${cls}">${money(v)}</div><div class="name" style="opacity:.6;font-size:11px;">${label}</div></div>`;
         }).join('')}
       </div>
-      ${lastSettlement ? `<div style="font-size:11.5px;opacity:.75;margin-top:14px;position:relative;">ℹ️ Ye hisaab <b>${formatDateOnly(lastSettlement.settledUpTo)}</b> ke baad ke kharchon ka hai — usse pehle ka sab settle ho chuka hai. <a href="#/reports" style="color:var(--gold-light);">Reports mein poori history dekhein →</a></div>` : ''}
+      ${lastSettlement ? `<div style="font-size:11.5px;opacity:.75;margin-top:14px;position:relative;">ℹ️ Ye hisaab <b>${formatDateOnly(lastSettlement.settledUpTo)}</b> ke baad ke kharchon ka hai — usse pehle ka sab settle ho chuka hai. <a href="#/settle" style="color:var(--gold-light);">Settle page par poori history dekhein →</a></div>` : ''}
     </div>
     <div id="sec-board"></div>
   `;
@@ -877,11 +965,9 @@ function renderReports(host, activeMembers, isAdmin){
   const todayStr = toDateInputValue(today);
   const oldestExp = allExpenses.length ? allExpenses[allExpenses.length-1] : null;
   const oldestStr = (oldestExp && oldestExp.createdAt) ? toDateInputValue(tsToMillis(oldestExp.createdAt) ? new Date(tsToMillis(oldestExp.createdAt)) : today) : todayStr;
-  const lastSettlement = allSettlements[0] || null;
-  const lastSettleMs = lastSettlement ? tsToMillis(lastSettlement.settledUpTo) : 0;
 
   host.innerHTML = `
-    <div class="card" style="margin-bottom:20px;">
+    <div class="card">
       <h3 style="margin-bottom:14px;">Date se filter karein</h3>
       <div class="row">
         <div class="field"><label>From</label><input type="date" id="repFrom" value="${oldestStr}" max="${todayStr}"/></div>
@@ -889,24 +975,6 @@ function renderReports(host, activeMembers, isAdmin){
       </div>
       <button class="btn-primary" id="repGoBtn">Dikhao</button>
       <div id="repResult" style="margin-top:18px;"></div>
-    </div>
-
-    ${isAdmin ? `
-    <div class="card" style="margin-bottom:20px;">
-      <h3 style="margin-bottom:8px;">Hisaab settle karein</h3>
-      <p style="font-size:13px;color:var(--ink-soft);margin-bottom:14px;line-height:1.55;">
-        Jab sab members aapas mein cash/UPI se paise clear kar lein, to yahan se ek date tak ke saare kharche "settle" mark kar dein.
-        Uske baad Home page ka hisaab sirf us date ke <b>baad</b> ke naye kharchon se banega — purana hisaab yahan history mein records rahega.
-        ${lastSettlement ? `<br><br>📌 Pichhli baar <b>${formatDateOnly(lastSettlement.settledUpTo)}</b> tak settle hua tha.` : '<br><br>Abhi tak koi settlement nahi hua hai.'}
-      </p>
-      <div class="field" style="max-width:220px;"><label>Is date tak settle karein</label><input type="date" id="settleDate" value="${todayStr}" max="${todayStr}"/></div>
-      <button class="btn-danger" id="settlePreviewBtn">Settle Preview Dekhein</button>
-      <div id="settlePreview" style="margin-top:16px;"></div>
-    </div>` : ''}
-
-    <div class="card">
-      <h3 style="margin-bottom:6px;">Settlement History</h3>
-      <div id="settleHistory">${renderSettlementHistory()}</div>
     </div>
   `;
 
@@ -939,8 +1007,93 @@ function renderReports(host, activeMembers, isAdmin){
   }
   document.getElementById('repGoBtn').onclick = runFilter;
   runFilter();
+}
+
+/* ---------------- SETTLE PAGE ---------------- */
+function renderPaymentHistory(isAdmin){
+  if (!allPayments.length){
+    return `<div class="empty" style="padding:26px 10px;"><span class="emoji">💵</span>Abhi tak koi payment record nahi hua.</div>`;
+  }
+  return allPayments.map(p => `
+    <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--paper-line);padding:11px 4px;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:14px;font-weight:600;">${escapeHtml(nameFor(p.uid))} <span style="font-weight:400;color:var(--ink-soft);">ne diya</span></div>
+        <div style="font-size:11.5px;color:var(--ink-soft);">${formatDateTime(p.createdAt)}${p.note ? ' · ' + escapeHtml(p.note) : ''}</div>
+      </div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:15px;color:var(--credit);">${money(p.amount)}</div>
+      ${isAdmin ? `<button class="btn-ghost btn-small" data-del-payment="${p.id}">✕</button>` : ''}
+    </div>`).join('');
+}
+
+function renderSettle(host, activeMembers, isAdmin){
+  const today = new Date();
+  const todayStr = toDateInputValue(today);
+  const lastSettlement = allSettlements[0] || null;
+  const lastSettleMs = lastSettlement ? tsToMillis(lastSettlement.settledUpTo) : 0;
+  const {net: liveNet} = computeBalances();
+
+  host.innerHTML = `
+    ${isAdmin ? `
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="margin-bottom:14px;">Payment record karein</h3>
+      <p style="font-size:13px;color:var(--ink-soft);margin-bottom:14px;">Jab koi member cash/UPI se apna due chuka de, yahan se record kar dein — dashboard mein uska balance turant kam ho jayega.</p>
+      <div class="row">
+        <div class="field">
+          <label>Kisne diya</label>
+          <select id="payUid">
+            ${activeMembers.map(m=>{
+              const v = liveNet[m.uid]||0;
+              const hint = v < -0.5 ? ` (abhi ${money(-v)} dena hai)` : v > 0.5 ? ` (abhi ${money(v)} lena hai)` : ' (settled)';
+              return `<option value="${m.uid}">${escapeHtml(m.name)}${hint}</option>`;
+            }).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Amount</label><input id="payAmt" type="number" min="0" step="0.01" placeholder="0.00"/></div>
+      </div>
+      <div class="field"><label>Note (optional)</label><input id="payNote" placeholder="e.g. Cash diya, UPI se bheja"/></div>
+      <button class="btn-primary" id="payAddBtn">Payment Add Karein</button>
+    </div>` : ''}
+
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="margin-bottom:6px;">Payment History</h3>
+      <div id="paymentHistoryHost">${renderPaymentHistory(isAdmin)}</div>
+    </div>
+
+    ${isAdmin ? `
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="margin-bottom:8px;">Poora hisaab settle karein</h3>
+      <p style="font-size:13px;color:var(--ink-soft);margin-bottom:14px;line-height:1.55;">
+        Jab sab members aapas mein poora hisaab clear kar lein, to yahan se ek date tak ke saare kharche/payments "settle" mark kar dein.
+        Uske baad Home page ka hisaab sirf us date ke <b>baad</b> ka banega — purana hisaab history mein records rahega.
+        ${lastSettlement ? `<br><br>📌 Pichhli baar <b>${formatDateOnly(lastSettlement.settledUpTo)}</b> tak settle hua tha.` : '<br><br>Abhi tak koi settlement nahi hua hai.'}
+      </p>
+      <div class="field" style="max-width:220px;"><label>Is date tak settle karein</label><input type="date" id="settleDate" value="${todayStr}" max="${todayStr}"/></div>
+      <button class="btn-danger" id="settlePreviewBtn">Settle Preview Dekhein</button>
+      <div id="settlePreview" style="margin-top:16px;"></div>
+    </div>` : ''}
+
+    <div class="card">
+      <h3 style="margin-bottom:6px;">Settlement History</h3>
+      <div id="settleHistory">${renderSettlementHistory()}</div>
+    </div>
+  `;
+
+  function wirePaymentDeleteButtons(){
+    document.querySelectorAll('[data-del-payment]').forEach(btn=>{
+      btn.onclick = ()=> deletePayment(btn.dataset.delPayment);
+    });
+  }
+  wirePaymentDeleteButtons();
 
   if (isAdmin){
+    document.getElementById('payAddBtn').onclick = async ()=>{
+      const uid = document.getElementById('payUid').value;
+      const amt = parseFloat(document.getElementById('payAmt').value);
+      const note = document.getElementById('payNote').value;
+      const ok = await createPayment(uid, amt, note);
+      if (ok){ goTo('#/settle'); }
+    };
+
     document.getElementById('settlePreviewBtn').onclick = ()=>{
       const dateVal = document.getElementById('settleDate').value;
       if (!dateVal){ toast('Date chunein'); return; }
@@ -964,6 +1117,7 @@ function renderReports(host, activeMembers, isAdmin){
   }
 }
 
+
 /* ---------------- CHARTS PAGE ---------------- */
 const CHART_COLORS = ['#B8892B','#2F6E4F','#B23A48','#3E6EA5','#8A5DB8','#C17A3E','#4A9B8E','#B85A8A','#6B8E4E','#A5763E'];
 
@@ -974,6 +1128,16 @@ function destroyCharts(){
 
 function renderCharts(host, activeMembers){
   destroyCharts();
+
+  if (typeof Chart === 'undefined'){
+    host.innerHTML = `
+      <div class="card empty" style="padding:40px 20px;">
+        <span class="emoji">📉</span>
+        Charts library load nahi ho payi.<br>
+        <span style="font-size:12px;color:var(--ink-soft);">Internet connection check karein aur page reload karein (Chart.js ek CDN se load hoti hai).</span>
+      </div>`;
+    return;
+  }
 
   const periods = [
     {key:'thisMonth', label:'Is Mahine', range: monthRange(0)},
@@ -1041,6 +1205,8 @@ function renderCharts(host, activeMembers){
       <p id="itemChartNote" style="font-size:12px;color:var(--ink-soft);margin-top:10px;"></p>
     </div>
   `;
+
+  try {
 
   // --- month trend bar chart ---
   const trendCtx = document.getElementById('monthTrendChart');
@@ -1146,6 +1312,50 @@ function renderCharts(host, activeMembers){
   }
   activeCharts.push(null); // reserve index 2 for item chart
   drawItemChart(selectedPeriod);
+
+  } catch(e) {
+    toast('Charts banane mein error: ' + e.message, 'error');
+    console.error('Chart render error:', e);
+  }
+}
+
+/* ---------------- ACCOUNT / CHANGE PASSWORD ---------------- */
+function renderAccount(host){
+  host.innerHTML = `
+    <button class="btn-ghost btn-small" id="backBtn" style="margin-bottom:16px;">← Wapas</button>
+    <div class="card" style="max-width:420px;">
+      <h3 style="margin-bottom:6px;">Apna Password Badlein</h3>
+      <p style="font-size:13px;color:var(--ink-soft);margin-bottom:16px;">Logged in: <b>${escapeHtml(currentUser.email)}</b></p>
+      <div class="field"><label>Current Password</label><input id="curPass" type="password" placeholder="••••••••"/></div>
+      <div class="field"><label>Naya Password</label><input id="newPass" type="password" placeholder="Kam se kam 6 characters"/></div>
+      <div class="field"><label>Naya Password Dobara</label><input id="newPass2" type="password" placeholder="••••••••"/></div>
+      <button class="btn-primary" id="changePassBtn" style="width:100%;">Password Update Karein</button>
+      <div class="err" id="pErr"></div>
+      <div class="msg" id="pMsg"></div>
+    </div>
+  `;
+  document.getElementById('backBtn').onclick = ()=> goTo('#/');
+  document.getElementById('changePassBtn').onclick = async ()=>{
+    const errEl = document.getElementById('pErr'), msgEl = document.getElementById('pMsg');
+    errEl.textContent = ''; msgEl.textContent = '';
+    const curPass = document.getElementById('curPass').value;
+    const newPass = document.getElementById('newPass').value;
+    const newPass2 = document.getElementById('newPass2').value;
+    if (!curPass || !newPass || !newPass2){ errEl.textContent = 'Sab fields bharein'; return; }
+    if (newPass.length < 6){ errEl.textContent = 'Naya password kam se kam 6 characters ka hona chahiye'; return; }
+    if (newPass !== newPass2){ errEl.textContent = 'Dono naye password match nahi kar rahe'; return; }
+    try{
+      const cred = EmailAuthProvider.credential(currentUser.email, curPass);
+      await reauthenticateWithCredential(currentUser, cred);
+      await updatePassword(currentUser, newPass);
+      msgEl.textContent = 'Password update ho gaya ✓';
+      document.getElementById('curPass').value = '';
+      document.getElementById('newPass').value = '';
+      document.getElementById('newPass2').value = '';
+    }catch(e){
+      errEl.textContent = friendlyError(e);
+    }
+  };
 }
 
 function renderExpenseDetail(host, exp){
@@ -1359,6 +1569,10 @@ function escapeHtml(s){
 
 3. Authentication enable karein:
    Build > Authentication > Sign-in method > "Email/Password" ON karein.
+   (Optional) Build > Authentication > Templates > "Password reset" se us
+   email ka look/sender-name customize kar sakte hain jo "Password bhool
+   gaye?" click karne par user ko jaata hai — Firebase ki default email
+   bhi bina kisi extra setup ke kaam karti hai.
 
 4. Firestore Database banayein (production mode).
 
@@ -1416,6 +1630,13 @@ service cloud.firestore {
       // settlements are an immutable audit trail — never editable or deletable
       allow update, delete: if false;
     }
+
+    match /payments/{paymentId} {
+      allow read: if isActiveMember();
+      // only admin records/edits/removes a payment, to prevent members
+      // falsely claiming they paid their dues
+      allow create, update, delete: if isAdmin();
+    }
   }
 }
 
@@ -1424,8 +1645,9 @@ service cloud.firestore {
 
 KAISE KAAM KARTA HAI:
 - App mein alag alag pages hain (URL hash se): Home (#/), + Naya Kharcha (#/add),
-  Reports (#/reports, date-filter + settle-up), Charts (#/charts, visual
-  breakdown), sab members ko dikhte hain. Members (#/members, sirf admin ko
+  Reports (#/reports, date-filter), Charts (#/charts, visual breakdown),
+  Settle (#/settle, payments record karna + poora hisaab settle karna) — ye
+  sab active members ko dikhte hain. Members (#/members, sirf admin ko
   dikhta hai), aur har kharche ka apna detail page (#/expense/ID) jahan se
   edit page (#/expense/ID/edit) khulta hai.
 - Charts page 3 cheezein dikhata hai: (1) is mahine ka kharcha pichle mahine
@@ -1438,13 +1660,23 @@ KAISE KAAM KARTA HAI:
   date) ke saath group hokar dikhte hain.
 - Reports page se koi bhi member From–To date chunke us period ka total
   kharcha aur har member ne kitna paid kiya dekh sakta hai.
-- Reports page par admin ko ek "Settle" section bhi dikhta hai: ek date
-  chunkar preview dekhte hain ki us date tak kisko kitna dena/lena hai, aur
-  confirm karne par ek "settlement" record ban jata hai (immutable — kabhi
-  edit/delete nahi hota, sirf history ke liye rehta hai). Iske baad Home
-  page ka live hisaab sirf us settlement ke BAAD ke naye kharchon se
-  banta hai — purana hisaab dobara nahi dikhta, lekin Reports > Settlement
-  History mein hamesha ke liye record rehta hai.
+- Settle page par (sirf admin) ek member choose karke "kitna paisa diya"
+  record kar sakte hain (cash/UPI se dues chukane par) — us member ka
+  outstanding balance Home page ke dashboard se turant utna kam ho jata hai.
+  Har payment ki history yahan dikhti hai (admin delete bhi kar sakta hai
+  agar galti se galat entry ho gayi ho).
+- Isi Settle page par ek "Poora hisaab settle karein" section bhi hai (sirf
+  admin): ek date chunkar preview dekhte hain ki us date tak kisko kitna
+  dena/lena hai, aur confirm karne par ek "settlement" record ban jata hai
+  (immutable — kabhi edit/delete nahi hota, sirf history ke liye rehta hai).
+  Iske baad Home page ka live hisaab sirf us settlement ke BAAD ke naye
+  kharchon/payments se banta hai — purana hisaab dobara nahi dikhta, lekin
+  Settle > Settlement History mein hamesha ke liye record rehta hai.
+- Login page par "Password bhool gaye?" link se koi bhi user apne email par
+  Firebase ka password-reset link mangwa sakta hai (Firebase khud email
+  bhejta hai, isliye koi extra email-service setup nahi chahiye).
+- Login ke baad header mein "Account" button se koi bhi user apna password
+  badal sakta hai (current password + naya password dobara daalkar).
 - Sabse pehla signup karne wala user automatically ADMIN ban jata hai.
 - Admin "Members" page se naye member ko email+naam se INVITE karta hai
   (ye page normal members ko bilkul nahi dikhta). Jab wo email us naam se
