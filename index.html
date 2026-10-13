@@ -237,6 +237,7 @@ const expensesCol = collection(db, "expenses");
 const invitesCol = collection(db, "invites"); // doc id = email
 const settlementsCol = collection(db, "settlements");
 const paymentsCol = collection(db, "payments");
+const rentCol = collection(db, "rentPayments"); // rent paid to the landlord
 
 let currentUser = null;   // firebase auth user
 let myMember = null;      // my member doc {id,...}
@@ -244,8 +245,9 @@ let allMembers = [];      // active + pending (invites live separately now)
 let allExpenses = [];
 let allInvites = [];      // pending invites {id(=email), name, email, createdAt}
 let allSettlements = [];  // past settlements, newest first
+let allRent = [];         // rent payments made to the landlord, newest first
 let allPayments = [];     // individual cash payments members have handed over, newest first
-let unsubMembers = null, unsubExpenses = null, unsubInvites = null, unsubSettlements = null, unsubPayments = null;
+let unsubMembers = null, unsubExpenses = null, unsubInvites = null, unsubSettlements = null, unsubPayments = null, unsubRent = null;
 let activeCharts = []; // Chart.js instances currently on screen, destroyed before each re-render
 
 const DESCRIPTION_SUGGESTIONS = ['Grocery','Rent','Electricity Bill','Water Bill','Gas','Internet / WiFi','Maintenance','Cleaning','Food / Eating Out','Vegetables','Milk','Other'];
@@ -260,6 +262,7 @@ function parseRoute(){
   if (parts[0] === 'charts') return {page:'charts'};
   if (parts[0] === 'settle') return {page:'settle'};
   if (parts[0] === 'account') return {page:'account'};
+  if (parts[0] === 'rent') return {page:'rent'};
   if (parts[0] === 'members') return {page:'members'};
   if (parts[0] === 'expense' && parts[1]) return {page: parts[2]==='edit' ? 'editExpense' : 'expenseDetail', id: parts[1]};
   return {page:'dashboard'};
@@ -297,9 +300,10 @@ onAuthStateChanged(auth, async (user) => {
   if (unsubInvites) unsubInvites();
   if (unsubSettlements) { unsubSettlements(); unsubSettlements = null; }
   if (unsubPayments) { unsubPayments(); unsubPayments = null; }
+  if (unsubRent) { unsubRent(); unsubRent = null; }
 
   if (!user) {
-    myMember = null; allMembers = []; allExpenses = []; allInvites = []; allSettlements = []; allPayments = [];
+    myMember = null; allMembers = []; allExpenses = []; allInvites = []; allSettlements = []; allPayments = []; allRent = [];
     renderAuthScreen();
     return;
   }
@@ -380,6 +384,15 @@ onAuthStateChanged(auth, async (user) => {
       );
     } else if (!isActiveNow && unsubPayments) {
       unsubPayments(); unsubPayments = null; allPayments = [];
+    }
+
+    if (isActiveNow && !unsubRent) {
+      unsubRent = onSnapshot(query(rentCol, orderBy('createdAt','desc')),
+        (rsnap) => { allRent = rsnap.docs.map(d => ({id:d.id, ...d.data()})); render(); },
+        (err) => { toast('Rent read error: ' + err.message, 'error'); }
+      );
+    } else if (!isActiveNow && unsubRent) {
+      unsubRent(); unsubRent = null; allRent = [];
     }
 
     render();
@@ -529,11 +542,12 @@ async function createSettlement(settledUpToMs, net, txns){
 }
 
 /* ---------------- PAYMENTS (manual cash given towards dues) ---------------- */
-async function createPayment(uid, amount, note){
-  if (!uid || !amount || amount<=0){ toast('Member aur amount sahi se bharein'); return false; }
+async function createPayment(uid, toUid, amount, note){
+  if (!uid || !toUid || !amount || amount<=0){ toast('Dene wale, lene wale aur amount sahi se bharein'); return false; }
+  if (uid === toUid){ toast('Dene wala aur lene wala alag hone chahiye'); return false; }
   try{
     await addDoc(paymentsCol, {
-      uid, amount: Number(amount), note: (note||'').trim(),
+      uid, toUid, amount: Number(amount), note: (note||'').trim(),
       createdAt: serverTimestamp(), createdBy: currentUser.uid
     });
     toast('Payment record ho gaya ✓', 'success');
@@ -542,6 +556,28 @@ async function createPayment(uid, amount, note){
     toast('Error: ' + (e.message || 'payment record nahi ho paya'), 'error');
     return false;
   }
+}
+
+/* ---------------- RENT (paid to landlord) ---------------- */
+async function createRentPayment(paidBy, amount, month, note){
+  if (!paidBy || !amount || amount<=0 || !month){ toast('Member, amount aur mahina sahi se bharein'); return false; }
+  try{
+    await addDoc(rentCol, {
+      paidBy, amount: Number(amount), month, note: (note||'').trim(),
+      createdAt: serverTimestamp(), createdBy: currentUser.uid
+    });
+    toast('Rent payment record ho gaya ✓', 'success');
+    return true;
+  }catch(e){
+    toast('Error: ' + (e.message || 'rent record nahi ho paya'), 'error');
+    return false;
+  }
+}
+
+async function deleteRentPayment(id){
+  if (!confirm('Ye rent entry delete karni hai?')) return;
+  try{ await deleteDoc(doc(db,'rentPayments',id)); }
+  catch(e){ toast('Error: ' + (e.message || 'delete nahi ho paya'), 'error'); }
 }
 
 async function deletePayment(id){
@@ -654,7 +690,8 @@ function computeBalancesInRange(fromMs, toMs){
     const createdMs = p.createdAt ? tsToMillis(p.createdAt) : Date.now();
     if (createdMs <= fromMs || createdMs > toMs) return;
     filteredPayments.push(p);
-    if (net[p.uid] !== undefined) net[p.uid] += p.amount;
+    if (net[p.uid] !== undefined) net[p.uid] += p.amount;          // payer's debt reduces
+    if (p.toUid && net[p.toUid] !== undefined) net[p.toUid] -= p.amount; // receiver's credit reduces
   });
 
   return {net, txns: minimalTxns(net), total, paidByMember, filteredExpenses, filteredPayments};
@@ -837,6 +874,7 @@ function renderMainApp(){
       <button class="tab ${route.page==='reports'?'active':''}" data-nav="#/reports">Reports</button>
       <button class="tab ${route.page==='charts'?'active':''}" data-nav="#/charts">Charts</button>
       <button class="tab ${route.page==='settle'?'active':''}" data-nav="#/settle">Settle</button>
+      <button class="tab ${route.page==='rent'?'active':''}" data-nav="#/rent">Rent</button>
       ${isAdmin ? `<button class="tab ${route.page==='members'?'active':''}" data-nav="#/members">Members</button>` : ''}
     </div>
 
@@ -861,6 +899,8 @@ function renderMainApp(){
     renderCharts(host, activeMembers);
   } else if (route.page === 'settle') {
     renderSettle(host, activeMembers, isAdmin);
+  } else if (route.page === 'rent') {
+    renderRent(host, activeMembers, isAdmin);
   } else if (route.page === 'account') {
     renderAccount(host);
   } else if (route.page === 'members') {
@@ -1017,7 +1057,7 @@ function renderPaymentHistory(isAdmin){
   return allPayments.map(p => `
     <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--paper-line);padding:11px 4px;">
       <div style="flex:1;min-width:0;">
-        <div style="font-size:14px;font-weight:600;">${escapeHtml(nameFor(p.uid))} <span style="font-weight:400;color:var(--ink-soft);">ne diya</span></div>
+        <div style="font-size:14px;font-weight:600;">${escapeHtml(nameFor(p.uid))} <span style="font-weight:400;color:var(--ink-soft);">${p.toUid ? '→' : 'ne diya'}</span>${p.toUid ? ' ' + escapeHtml(nameFor(p.toUid)) : ''}</div>
         <div style="font-size:11.5px;color:var(--ink-soft);">${formatDateTime(p.createdAt)}${p.note ? ' · ' + escapeHtml(p.note) : ''}</div>
       </div>
       <div style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:15px;color:var(--credit);">${money(p.amount)}</div>
@@ -1030,27 +1070,45 @@ function renderSettle(host, activeMembers, isAdmin){
   const todayStr = toDateInputValue(today);
   const lastSettlement = allSettlements[0] || null;
   const lastSettleMs = lastSettlement ? tsToMillis(lastSettlement.settledUpTo) : 0;
-  const {net: liveNet} = computeBalances();
+  const {net: liveNet, txns: liveTxns} = computeBalances();
+  const balHint = (uid)=>{
+    const v = liveNet[uid]||0;
+    return v < -0.5 ? ` (abhi ${money(-v)} dena hai)` : v > 0.5 ? ` (abhi ${money(v)} lena hai)` : ' (settled)';
+  };
 
   host.innerHTML = `
     ${isAdmin ? `
     <div class="card" style="margin-bottom:20px;">
       <h3 style="margin-bottom:14px;">Payment record karein</h3>
-      <p style="font-size:13px;color:var(--ink-soft);margin-bottom:14px;">Jab koi member cash/UPI se apna due chuka de, yahan se record kar dein — dashboard mein uska balance turant kam ho jayega.</p>
+      <p style="font-size:13px;color:var(--ink-soft);margin-bottom:14px;">Jab koi member kisi doosre member ko cash/UPI se paise de, yahan record karein — dene wale ka "dena hai" aur lene wale ka "lena hai" dono turant utna kam ho jayega.</p>
+      ${liveTxns.length ? `
+      <div style="background:var(--paper);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:16px;">
+        <div style="font-size:12px;color:var(--ink-soft);margin-bottom:6px;">Abhi ka baaki hisaab (tap karke form bhar jayega):</div>
+        ${liveTxns.map((t,i)=>`
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 0;${i?'border-top:1px solid var(--paper-line);':''}">
+            <div style="flex:1;font-size:13.5px;"><b>${escapeHtml(nameFor(t.from))}</b> → <b>${escapeHtml(nameFor(t.to))}</b></div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:13.5px;">${money(t.amt)}</div>
+            <button class="btn-ghost btn-small" data-prefill="${i}">Record</button>
+          </div>`).join('')}
+      </div>` : ''}
       <div class="row">
         <div class="field">
           <label>Kisne diya</label>
           <select id="payUid">
-            ${activeMembers.map(m=>{
-              const v = liveNet[m.uid]||0;
-              const hint = v < -0.5 ? ` (abhi ${money(-v)} dena hai)` : v > 0.5 ? ` (abhi ${money(v)} lena hai)` : ' (settled)';
-              return `<option value="${m.uid}">${escapeHtml(m.name)}${hint}</option>`;
-            }).join('')}
+            ${activeMembers.map(m=>`<option value="${m.uid}">${escapeHtml(m.name)}${balHint(m.uid)}</option>`).join('')}
           </select>
         </div>
-        <div class="field"><label>Amount</label><input id="payAmt" type="number" min="0" step="0.01" placeholder="0.00"/></div>
+        <div class="field">
+          <label>Kisko diya</label>
+          <select id="payToUid">
+            ${activeMembers.map((m,i)=>`<option value="${m.uid}" ${i===1?'selected':''}>${escapeHtml(m.name)}${balHint(m.uid)}</option>`).join('')}
+          </select>
+        </div>
       </div>
-      <div class="field"><label>Note (optional)</label><input id="payNote" placeholder="e.g. Cash diya, UPI se bheja"/></div>
+      <div class="row">
+        <div class="field"><label>Amount</label><input id="payAmt" type="number" min="0" step="0.01" placeholder="0.00"/></div>
+        <div class="field"><label>Note (optional)</label><input id="payNote" placeholder="e.g. Cash diya, UPI se bheja"/></div>
+      </div>
       <button class="btn-primary" id="payAddBtn">Payment Add Karein</button>
     </div>` : ''}
 
@@ -1088,11 +1146,21 @@ function renderSettle(host, activeMembers, isAdmin){
   if (isAdmin){
     document.getElementById('payAddBtn').onclick = async ()=>{
       const uid = document.getElementById('payUid').value;
+      const toUid = document.getElementById('payToUid').value;
       const amt = parseFloat(document.getElementById('payAmt').value);
       const note = document.getElementById('payNote').value;
-      const ok = await createPayment(uid, amt, note);
+      const ok = await createPayment(uid, toUid, amt, note);
       if (ok){ goTo('#/settle'); }
     };
+    document.querySelectorAll('[data-prefill]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const t = liveTxns[Number(btn.dataset.prefill)];
+        document.getElementById('payUid').value = t.from;
+        document.getElementById('payToUid').value = t.to;
+        document.getElementById('payAmt').value = Math.round(t.amt*100)/100;
+        document.getElementById('payAmt').focus();
+      };
+    });
 
     document.getElementById('settlePreviewBtn').onclick = ()=>{
       const dateVal = document.getElementById('settleDate').value;
@@ -1317,6 +1385,105 @@ function renderCharts(host, activeMembers){
     toast('Charts banane mein error: ' + e.message, 'error');
     console.error('Chart render error:', e);
   }
+}
+
+/* ---------------- RENT PAGE ---------------- */
+function monthKeyLabel(key){
+  const [y,m] = String(key).split('-').map(Number);
+  if (!y || !m) return key || '—';
+  return new Date(y, m-1, 1).toLocaleDateString('en-IN', {month:'long', year:'numeric'});
+}
+
+function renderRent(host, activeMembers, isAdmin){
+  const curMonth = toDateInputValue(new Date()).slice(0,7);
+  const months = Array.from(new Set([curMonth, ...allRent.map(r=>r.month).filter(Boolean)])).sort().reverse();
+  let filter = curMonth;
+
+  host.innerHTML = `
+    <div class="card" style="margin-bottom:20px;">
+      <h3 style="margin-bottom:6px;">Room rent payment record karein</h3>
+      <p style="font-size:13px;color:var(--ink-soft);margin-bottom:14px;">Jisne makan malik ko rent diya, yahan likh dein — kisne kitna diya, kis mahine ka, sab track hota rahega.</p>
+      <div class="row">
+        <div class="field">
+          <label>Kisne diya</label>
+          ${isAdmin
+            ? `<select id="rentWho">${activeMembers.map(m=>`<option value="${m.uid}" ${m.uid===currentUser.uid?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}</select>`
+            : `<input value="${escapeHtml(myMember.name)}" disabled style="opacity:.7;"/>`}
+        </div>
+        <div class="field"><label>Amount</label><input id="rentAmt" type="number" min="0" step="0.01" placeholder="0.00"/></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Kis mahine ka rent</label><input id="rentMonth" type="month" value="${curMonth}"/></div>
+        <div class="field"><label>Note (optional)</label><input id="rentNote" placeholder="e.g. UPI se bheja, cash diya"/></div>
+      </div>
+      <button class="btn-primary" id="rentAddBtn">Rent Add Karein</button>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+        <h3>Rent ka hisaab</h3>
+        <select id="rentFilter" style="width:auto;min-width:170px;">
+          <option value="all">Sab Mahine</option>
+          ${months.map(m=>`<option value="${m}" ${m===filter?'selected':''}>${monthKeyLabel(m)}</option>`).join('')}
+        </select>
+      </div>
+      <div id="rentSummary"></div>
+    </div>
+  `;
+
+  function drawSummary(){
+    const entries = allRent.filter(r => filter==='all' || r.month === filter);
+    const total = entries.reduce((a,r)=>a + (r.amount||0), 0);
+    const perMember = {};
+    entries.forEach(r => { perMember[r.paidBy] = (perMember[r.paidBy]||0) + (r.amount||0); });
+    const rows = Object.entries(perMember).sort((a,b)=>b[1]-a[1]);
+
+    let lastMonth = null, list = '';
+    entries.forEach(r => {
+      if (filter==='all' && r.month !== lastMonth){
+        list += `<div class="date-heading">${monthKeyLabel(r.month)}</div>`;
+        lastMonth = r.month;
+      }
+      list += `
+        <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--paper-line);padding:11px 4px;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:14px;font-weight:600;">${escapeHtml(nameFor(r.paidBy))} <span style="font-weight:400;color:var(--ink-soft);">ne makan malik ko diya</span></div>
+            <div style="font-size:11.5px;color:var(--ink-soft);">${monthKeyLabel(r.month)} ka rent · ${formatDateTime(r.createdAt)}${r.note ? ' · ' + escapeHtml(r.note) : ''}</div>
+          </div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:15px;">${money(r.amount)}</div>
+          ${isAdmin ? `<button class="btn-ghost btn-small" data-del-rent="${r.id}">✕</button>` : ''}
+        </div>`;
+    });
+
+    document.getElementById('rentSummary').innerHTML = entries.length ? `
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+        <div style="font-size:13px;color:var(--ink-soft);">Makan malik ko total diya (${entries.length} entries)</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:22px;">${money(total)}</div>
+      </div>
+      <div class="net-grid" style="margin-bottom:16px;">
+        ${rows.map(([uid,amt])=>`<div class="net-card" style="background:var(--paper);border-color:var(--border);">
+          <div class="name" style="color:var(--ink-soft);">${escapeHtml(nameFor(uid))}</div>
+          <div class="val" style="color:var(--ink);">${money(amt)}</div>
+          <div class="name" style="opacity:.6;font-size:11px;color:var(--ink-soft);">rent diya</div>
+        </div>`).join('')}
+      </div>
+      ${list}` : `<div class="empty" style="padding:26px 10px;"><span class="emoji">🏠</span>Is period mein koi rent payment record nahi hui.</div>`;
+
+    document.querySelectorAll('[data-del-rent]').forEach(btn=>{
+      btn.onclick = ()=> deleteRentPayment(btn.dataset.delRent);
+    });
+  }
+  drawSummary();
+
+  document.getElementById('rentFilter').onchange = (e)=>{ filter = e.target.value; drawSummary(); };
+  document.getElementById('rentAddBtn').onclick = async ()=>{
+    const who = isAdmin ? document.getElementById('rentWho').value : currentUser.uid;
+    const amt = parseFloat(document.getElementById('rentAmt').value);
+    const month = document.getElementById('rentMonth').value;
+    const note = document.getElementById('rentNote').value;
+    const ok = await createRentPayment(who, amt, month, note);
+    if (ok){ document.getElementById('rentAmt').value=''; document.getElementById('rentNote').value=''; }
+  };
 }
 
 /* ---------------- ACCOUNT / CHANGE PASSWORD ---------------- */
@@ -1637,6 +1804,15 @@ service cloud.firestore {
       // falsely claiming they paid their dues
       allow create, update, delete: if isAdmin();
     }
+
+    match /rentPayments/{rentId} {
+      allow read: if isActiveMember();
+      // a member can record their own rent payment; admin can record for anyone
+      allow create: if isActiveMember()
+        && request.resource.data.createdBy == request.auth.uid
+        && (isAdmin() || request.resource.data.paidBy == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
   }
 }
 
@@ -1672,6 +1848,14 @@ KAISE KAAM KARTA HAI:
   Iske baad Home page ka live hisaab sirf us settlement ke BAAD ke naye
   kharchon/payments se banta hai — purana hisaab dobara nahi dikhta, lekin
   Settle > Settlement History mein hamesha ke liye record rehta hai.
+- Settle page par admin "Kisne diya" aur "Kisko diya" dono chunkar payment
+  record karta hai — dene wale ka "dena hai" aur lene wale ka "lena hai"
+  dono utna kam ho jata hai. Upar "Abhi ka baaki hisaab" list se ek tap par
+  form pehle se bhar jata hai.
+- Rent page (#/rent): jisne makan malik ko rent diya wo apni entry (amount,
+  kis mahine ka, note) daalta hai; admin kisi ke naam se bhi daal sakta hai
+  aur galat entry delete kar sakta hai. Mahine-wise total aur kisne kitna
+  diya dikhta hai. Ye Home ke balance ko affect nahi karta.
 - Login page par "Password bhool gaye?" link se koi bhi user apne email par
   Firebase ka password-reset link mangwa sakta hai (Firebase khud email
   bhejta hai, isliye koi extra email-service setup nahi chahiye).
